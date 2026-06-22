@@ -98,10 +98,24 @@ class LogTransformer(BaseEstimator, TransformerMixin):
         self.epsilon = epsilon
 
     def fit(self, X, *, y=None):
+        self._feature_names_in = list(X.columns) if hasattr(X, "columns") else None
         return self
 
+    def get_feature_names_out(self, input_features=None):
+        if input_features is not None:
+            return np.asarray(input_features, dtype=object)
+        if self._feature_names_in is not None:
+            return np.asarray(self._feature_names_in, dtype=object)
+        raise ValueError("No feature names known; call fit first.")
+
     def transform(self, X):
-        return np.log1p(np.maximum(X, 0) + self.epsilon)
+        cols = X.columns if hasattr(X, "columns") else None
+        idx = X.index if hasattr(X, "index") else None
+        result = np.array(X, dtype=np.float64)
+        np.maximum(result, 0, out=result)
+        result += self.epsilon
+        np.log1p(result, out=result)
+        return pd.DataFrame(result, index=idx, columns=cols) if cols is not None else result
 
 
 class TopNHashEncoder(BaseEstimator, TransformerMixin):
@@ -150,6 +164,9 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
             for col in self.columns_
         }
         return self
+    
+    def get_feature_names_out(self, input_features=None):
+        return np.asarray(self.columns_, dtype=object)
 
     def transform(self, X: pd.DataFrame) -> pd.DataFrame:
         X = pd.DataFrame(X)
