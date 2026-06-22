@@ -1,6 +1,7 @@
 import logging
 import sys
 from pathlib import Path
+import os
 
 import numpy as np
 import pandas as pd
@@ -14,7 +15,7 @@ from src.core.log import (
     LogDispatcher,
     setup_logger,
 )
-from src.core.utils import flush_timing, skip_if_exists, timed
+from src.core.utils import flush_timing, skip_if_exists, timed, save_to_joblib, load_from_json, save_to_json
 
 from src.domain.analysis.metadata import (
     compute_clusters_metadata,
@@ -125,6 +126,9 @@ def _cluster_per_class(
     min_cluster_floor: int = 50,
     target_cluster_size: int = 25000,
     target_size_frac: float = 0.05,
+    save_clustering_models : bool,
+    clustering_models_base_path : Path,
+    clustering_algorithm_name: str,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, dict]]:
     """Per-class clustering. Returns (labels, centroids, noise_cluster_ids, report).
 
@@ -132,6 +136,7 @@ def _cluster_per_class(
     single-HDBSCAN runs, clusters absorbed by `min_cluster_floor` are reassigned
     to per-class pseudo-clusters; their IDs are collected in noise_cluster_ids.
     """
+
     n = X_num.shape[0]
     target_eff = max(
         2 * min_cluster_floor, min(round(n * target_size_frac), target_cluster_size)
@@ -142,8 +147,13 @@ def _cluster_per_class(
     report: dict[str, dict] = {}
     algo_names = list(algorithms.keys())
 
-    for cls in tqdm(classes, desc="Clustering classes"):
-        mask = y_class == cls
+    if save_clustering_models:
+        path_to_clustering_class_to_model_json = Path(clustering_models_base_path) / 'class_to_model.json'
+        class_to_cluster_model = load_from_json(file_path=path_to_clustering_class_to_model_json) if os.path.exists(path_to_clustering_class_to_model_json) else {}
+        class_to_cluster_model[clustering_algorithm_name] = {}
+
+    for current_class in tqdm(classes, desc="Clustering classes"):
+        mask = y_class == current_class
         if not mask.any():
             continue
         X_num_cls = X_num[mask]
@@ -173,7 +183,27 @@ def _cluster_per_class(
             min_cluster_floor=min_cluster_floor,
             metric=metric,
         )
-        raw_labels = cluster_fn(X_num_cls, X_cat_cls)
+        raw_labels, clustering_models = cluster_fn(X_num_cls, X_cat_cls)
+
+        # Save the clustering models if required
+        if save_clustering_models:
+            # clustering_models can be a single model or a dict. The dict is returned by the clustering function of the ensemble,
+            # otherwise if only one algorithm was used it will be just the model, which will be saved directly.
+            if len(algorithms)==1:
+                # Single algorithm (no ensemble)
+                path_to_current_class_model_joblib = Path(clustering_models_base_path) / str(str(current_class) + '___' + list(algorithms.keys())[0] + '.joblib')
+                save_to_joblib(data=clustering_models, file_path=path_to_current_class_model_joblib)
+                class_to_cluster_model[clustering_algorithm_name][str(current_class)] = str(path_to_current_class_model_joblib)
+            else:
+                # Multiple algorithms (ensemble)
+                paths_to_current_class_model_joblib = []
+                for clustering_algorithm_name in clustering_models:
+                    path_to_current_class_model_joblib = Path(clustering_models_base_path) / str(str(current_class) + '___ensemble_' + clustering_algorithm_name + '.joblib')
+                    save_to_joblib(data=clustering_models[clustering_algorithm_name], file_path=path_to_current_class_model_joblib)
+                    paths_to_current_class_model_joblib.append(str(path_to_current_class_model_joblib))
+                
+                class_to_cluster_model[clustering_algorithm_name][str(current_class)] = paths_to_current_class_model_joblib 
+
         raw_labels, n_floor_clusters, n_floor_points = _absorb_small_clusters(
             raw_labels, min_cluster_floor
         )
@@ -197,7 +227,7 @@ def _cluster_per_class(
                 _rekey_consensus_by_algo_name(consensus_diag, algo_names)
             )
 
-        report[str(cls)] = {
+        report[str(current_class)] = {
             "n_samples": n_cls,
             "algorithms": algo_reports,
             "consensus": consensus_block,
@@ -212,6 +242,10 @@ def _cluster_per_class(
         del X_raw_cls
         if len(cluster_ids) > 0:
             offset += int(cluster_ids.max()) + 1
+
+    # Save the json information about the classes to the models used for them
+    if save_clustering_models:
+        save_to_json(data=class_to_cluster_model, file_path=path_to_clustering_class_to_model_json)
 
     # reassign noise points (-1) to per-class pseudo-clusters
     noise_cluster_ids: set[int] = set()
@@ -334,6 +368,9 @@ def _cluster_splits(
         min_cluster_floor=cfg.clustering.min_cluster_floor,
         target_cluster_size=cfg.clustering.target_cluster_size,
         target_size_frac=cfg.clustering.target_size_frac,
+        save_clustering_models = cfg.prepare.save_clustering_models,
+        clustering_models_base_path = cfg.path.clustering_models,
+        clustering_algorithm_name=str(cfg.clustering.name)
     )
     dispatcher.publish(
         LogBundle.from_dict({"json/clustering_report": clustering_report})
