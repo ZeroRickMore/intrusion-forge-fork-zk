@@ -307,6 +307,7 @@ def make_ensemble_cluster_fn(
     weight_voters: bool = True,
     refine_geometry: bool = True,
     refine_margin: float = 0.8,
+    algorithms: dict[str, dict]
 ) -> ClusterFn:
     """Compose multiple ClusterFns via co-association + HDBSCAN(precomputed).
 
@@ -318,7 +319,12 @@ def make_ensemble_cluster_fn(
     """
 
     def _fn(X_num: np.ndarray, X_cat: np.ndarray | None = None) -> np.ndarray:
-        labels_list = [fn(X_num, X_cat) for fn in cluster_fns]
+        labels_and_models_list = [fn(X_num, X_cat) for fn in cluster_fns] # Each is a tuple (labels, best_model)
+
+        labels_list = [_[0] for _ in labels_and_models_list] # Only the labels
+
+        clustering_name_to_model = {list(algorithms.keys())[i] : labels_and_models_list[i][1] for i in range(len(algorithms))} # The ordering is kept between the cluster_fns and the algorithms
+
         labels, diagnostics = compute_coassociation_labels(
             labels_list,
             threshold=threshold,
@@ -333,6 +339,6 @@ def make_ensemble_cluster_fn(
         )
         if consensus_reporter is not None:
             consensus_reporter(diagnostics)
-        return labels
+        return labels, clustering_name_to_model
 
     return _fn
