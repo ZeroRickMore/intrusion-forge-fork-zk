@@ -1,3 +1,4 @@
+name: 'hdbscan'
 distance: ${distance}              # inherited from the top-level key
 max_fit_samples: 20000
 consensus_threshold: 0.5

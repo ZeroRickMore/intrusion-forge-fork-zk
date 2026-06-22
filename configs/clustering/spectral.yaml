@@ -1,3 +1,4 @@
+name: 'spectral'
 distance: ${distance}              # inherited from the top-level key
 max_fit_samples: 20000              # standalone: no s×s co-association, safe to raise the fit budget
 consensus_threshold: 0.5            # inert for a single algorithm
