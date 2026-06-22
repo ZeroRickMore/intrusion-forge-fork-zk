@@ -4,6 +4,7 @@ from collections.abc import Callable, Sequence
 
 import numpy as np
 from sklearn.metrics import pairwise_distances, silhouette_score
+from sklearn.base import ClusterMixin
 from tqdm import tqdm
 
 from src.core.utils import timed
@@ -16,6 +17,7 @@ from src.domain.analysis.complexity.shared import (
 FitFn = Callable[..., np.ndarray]  # (X_num, X_cat=None, **params) -> labels
 ClusterFn = Callable[[np.ndarray, np.ndarray | None], np.ndarray]  # (X_num, X_cat) -> labels
 SilhouetteFn = Callable[[np.ndarray, np.ndarray | None, np.ndarray], float]  # (X_num, X_cat, labels) -> sil
+
 
 
 def cluster_size_balance(labels: np.ndarray) -> float:
@@ -221,7 +223,7 @@ def grid_search(
     noise_penalty: float = 0.5,
     silhouette_fn: SilhouetteFn | None = None,
     **fixed_params,
-) -> dict:
+) -> tuple[dict, ClusterMixin]:
     """Generic grid search over param_grid, scored by noise-penalised silhouette.
 
     Score = silhouette − `noise_penalty` · noise_ratio. The silhouette is measured
@@ -251,6 +253,7 @@ def grid_search(
 
     best_score = float("-inf")
     best_entry: dict | None = None
+    best_model = None
     fallback_entry: dict | None = None
     sweep: list[dict] = []
 
@@ -262,7 +265,7 @@ def grid_search(
         combo = dict(zip(keys, combo_values))
         t0 = time.perf_counter()
         try:
-            labels = fit_fn(sub_num, X_cat=sub_cat, **combo, **fixed_params)
+            labels, model = fit_fn(sub_num, X_cat=sub_cat, **combo, **fixed_params)
         except Exception:
             sweep.append({
                 "combo": combo,
@@ -294,6 +297,7 @@ def grid_search(
         if s > best_score:
             best_score = s
             best_entry = entry
+            best_model = model
 
     if best_entry is None:
         best_entry = fallback_entry
@@ -303,4 +307,4 @@ def grid_search(
             "grid_search: no valid clustering found across all parameter combinations."
         )
 
-    return {"best": best_entry, "sweep": sweep}
+    return {"best": best_entry, "sweep": sweep}, best_model
