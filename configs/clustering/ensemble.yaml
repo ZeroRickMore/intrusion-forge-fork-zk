@@ -1,3 +1,4 @@
+name: 'ensemble'
 distance: ${distance}              # inherited from the top-level key
 max_fit_samples: 10000             # kept at 10k: co-association is a dense s×s matrix (O(s²) mem)
 consensus_threshold: 0.5            # with M=3, threshold 0.5 = >= 2/3 votes (true majority)
