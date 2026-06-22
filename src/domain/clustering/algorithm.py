@@ -57,7 +57,7 @@ def fit_hdbscan(
         clf.fit(X_num)
         labels = clf.labels_
 
-    return labels
+    return labels, clf
 
 
 @ClusteringFactory.register("kprototypes")
@@ -114,7 +114,7 @@ def fit_kprototypes(
         )
     else:
         labels = model.fit_predict(_mixed(X_num, X_cat), categorical=cat_idx)
-    return np.asarray(labels, dtype=np.int64)
+    return np.asarray(labels, dtype=np.int64), model
 
 
 @ClusteringFactory.register("kmeans")
@@ -131,7 +131,7 @@ def fit_kmeans(
     X_num = np.ascontiguousarray(X_num, dtype=np.float64)
     model = KMeans(n_clusters=n_clusters, random_state=random_state)
     labels = model.fit_predict(X_num)
-    return labels
+    return labels, model
 
 
 @ClusteringFactory.register("gmm")
@@ -153,7 +153,7 @@ def fit_gmm(
         random_state=random_state,
     )
     labels = model.fit_predict(X_num)
-    return labels
+    return labels, model
 
 
 @ClusteringFactory.register("birch")
@@ -184,7 +184,7 @@ def fit_birch(
     else:
         clf.fit(X_num)
         labels = clf.labels_
-    return labels
+    return labels, clf
 
 
 @ClusteringFactory.register("spectral")
@@ -224,4 +224,6 @@ def fit_spectral(
     sub_labels = SpectralClustering(**spec_kwargs).fit_predict(sub_num)
     nn = NearestNeighbors(n_neighbors=1, algorithm="auto").fit(sub_num)
     _, idx = nn.kneighbors(X_num, n_neighbors=1, return_distance=True)
-    return sub_labels[idx.ravel()]
+    return sub_labels[idx.ravel()], "This is a placeholder for the Spectral model."
+
+    # TODO HOW TO RETURN THE MODEL HERE?
