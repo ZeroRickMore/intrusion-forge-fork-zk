@@ -79,7 +79,7 @@ def _make_single_cluster_fn(
         }
         try:
             if grid:
-                result = grid_search(
+                result, best_model = grid_search(
                     X_num,
                     X_cat,
                     fit_fn,
@@ -156,4 +156,5 @@ def build_cluster_fn(
         weight_voters=weight_voters,
         refine_geometry=refine_geometry,
         refine_margin=refine_margin,
+        algorithms=algorithms,
     )
