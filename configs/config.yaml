@@ -1,7 +1,7 @@
 defaults:
   - data: cic_2018_v2
   - classifier: tabular
-  - clustering: ensemble
+  - clustering: kmeans
   - loss: focal             # consumed only by DL classifiers
   - optimizer: adamw        # consumed only by DL classifiers
   - scheduler: one_cycle    # consumed only by DL classifiers
@@ -27,6 +27,7 @@ grid_search:
 
 prepare:
   force: false                       # re-run preprocessing+clustering even if shared outputs exist
+  save_clustering_models: True       # saves the best clustering model(s) into ${path.out_base_path}/topk_inference
 
 complexity:
   distance: ${distance}              # inherited from the top-level key — must match the clustering metric
@@ -62,6 +63,8 @@ extend:
   nsamples: 200                      # coalition samples per explained instance (KernelExplainer)
   max_display: 20                    # top features shown in the beeswarm
 
+topk_inference:
+  k: 5 # The top-k parameter to use inside of topk_inference.py
 
 hydra:
   run:
