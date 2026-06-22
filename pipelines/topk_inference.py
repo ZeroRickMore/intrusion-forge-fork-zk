@@ -1,0 +1,60 @@
+# TODO REMOVE
+import sys
+from pathlib import Path
+import numpy as np
+
+sys.path.append(str(Path(__file__).resolve().parents[1]))
+
+# TODO REMOVE
+
+from src.core.config import load_config
+from src.core.utils import load_from_joblib, load_from_json
+
+
+
+
+
+
+
+def top_k_predict(x, weak_clf, ext_clf, cluster_models, k):
+    proba_weak = weak_clf.predict_proba(x)          # shape: (n_classes,)
+    top_k_classes = np.argsort(proba_weak)[-k:]        # k candidate labels
+
+    best_confidence = -np.inf
+    best_prediction = None
+
+    for c in top_k_classes:
+        complexity = load_from_joblib(cluster_models[c]).extract_complexity(x)
+        x_ext = np.concat(x, complexity)
+        proba_ext = ext_clf.predict_proba(x_ext)    # shape: (n_classes,)
+
+        conf = max(proba_ext)
+        if conf > best_confidence:
+            best_confidence = conf
+            best_prediction = np.argmax(proba_ext)
+
+    return best_prediction, best_confidence
+
+
+
+
+# topk_inference.py data=nb15_v2 name=topk_inference classifier=random_forest
+def main():
+    """Main entry point for data preparation."""
+
+    cfg = load_config(
+        config_path=Path(__file__).parent.parent / "configs",
+        config_name="config",
+        overrides=sys.argv[1:] + ['clustering=kmeans', 'data=nb15_v2', 'name=topk_inference_kmeans', 'classifier=random_forest'],
+    )
+
+    k = cfg.topk_inference.k
+
+    weak_clf = load_from_joblib(Path(cfg.path.models) / 'model.joblib') # classifier trained on raw features only
+    ext_clf = load_from_joblib(Path(cfg.path.models) / 'model_extended.joblib') # classifier trained on complexity-extended features
+
+    cluster_models = load_from_json(file_path=Path(cfg.path.clustering_models) / 'class_to_model.json')[str(cfg.clustering.name)] # I am only interested in the current clustering algorithm
+
+
+if __name__ == '__main__':
+    main()
