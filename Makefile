@@ -85,6 +85,7 @@ FORCE_FLAG  := $(if $(FORCE),prepare.force=true complexity.force=true,)
 EXTEND_FLAGS := $(if $(LABELFREE),extend.generate=true extend.labelfree=true,$(if $(EXTEND),extend.generate=true,))
 KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 
+
 .PHONY: prepare classify classify-extended extend complexity failure-classify render run run-clustering-sweep generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
@@ -122,6 +123,10 @@ failure-classify: complexity
 ## render:             Step 4 — render plots from analysis artifacts          (DATA, NAME, SEED, CLASSIFIER)
 render:
 	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
+
+## topk_inference
+topk-inference:
+	PYTHONPATH=. $(PYTHON) pipelines/topk_inference.py $(HYDRA)
 
 ## run:                Parametric sweep — fix passed vars, iterate the rest   (DATA?, CLASSIFIER?, NAME, SEED, FORCE, EXTEND)
 run:
