@@ -35,6 +35,7 @@ from src.domain.data.preprocessing import (
     ml_split,
     query_filter,
     rare_category_filter,
+    representative_split
 )
 from src.domain.analysis.complexity.shared import _l2_normalize
 from src.domain.clustering import build_cluster_fn
@@ -368,7 +369,7 @@ def _cluster_splits(
         min_cluster_floor=cfg.clustering.min_cluster_floor,
         target_cluster_size=cfg.clustering.target_cluster_size,
         target_size_frac=cfg.clustering.target_size_frac,
-        save_clustering_models = cfg.prepare.save_clustering_models,
+        save_clustering_models = cfg.prepare.topk_inference.save_clustering_models,
         clustering_models_base_path = cfg.path.clustering_models,
         clustering_algorithm_name=str(cfg.clustering.name)
     )
@@ -452,6 +453,29 @@ def _publish_metadata(
     return metadata
 
 
+
+def _split_dataset_points(
+        df,
+        dataset_split_path : str,
+        split_frac : float,
+        random_state : int | None = None,
+        label_col: str | None = None
+    ):
+    """Splits the dataset in two, and saves the results into two csv files.  
+    Returns the dataframe built on the split_frac, so if split_frac=0.7 the later prepare_data pipeline will be executed on the 0.7 dataset."""
+    os.makedirs(dataset_split_path, exist_ok=True)
+
+    prepared_data_output_path  = dataset_split_path / f'trained_on.pkl'
+    inference_data_output_path = dataset_split_path / f'inference_input.pkl'
+
+    prepared_data_df, inference_data_df = representative_split(df, split_frac, random_state, label_col)
+
+    save_df(df=prepared_data_df, file_path=prepared_data_output_path)
+    save_df(df=inference_data_df,file_path=inference_data_output_path)
+
+    return prepared_data_df
+
+
 @timed
 def prepare(cfg):
     """Prepare data given a configuration object."""
@@ -470,8 +494,18 @@ def prepare(cfg):
     df = load_df(str(raw_data_path))
     logger.info("Raw data loaded: %d rows, %d columns", *df.shape)
 
-    df_info = get_df_info(df, label_col=label_col)
+    df_info = get_df_info(df, label_col=label_col, split_frac=cfg.prepare.topk_inference.split_frac)
     dispatcher.publish(LogBundle.from_dict({"json/df_info": df_info}))
+
+    # Handle topk_inference dataset split
+    if cfg.prepare.topk_inference.split_dataset:
+        df = _split_dataset_points(
+            df=df,
+            dataset_split_path=cfg.path.dataset_split,
+            split_frac=cfg.prepare.topk_inference.split_frac,
+            random_state=cfg.seed,
+            label_col=label_col
+        )
 
     train_df, val_df, test_df = preprocess_df(
         df,
