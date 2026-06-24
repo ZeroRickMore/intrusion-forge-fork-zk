@@ -192,7 +192,7 @@ def _cluster_per_class(
             # otherwise if only one algorithm was used it will be just the model, which will be saved directly.
             if len(algorithms)==1:
                 # Single algorithm (no ensemble)
-                path_to_current_class_model_joblib = Path(clustering_models_base_path) / str(str(current_class) + '___' + list(algorithms.keys())[0] + '.joblib')
+                path_to_current_class_model_joblib = Path(clustering_models_base_path) / str(str(current_class) + '___' + clustering_algorithm_name + '.joblib')
                 save_to_joblib(data=clustering_models, file_path=path_to_current_class_model_joblib)
                 class_to_cluster_model[clustering_algorithm_name][str(current_class)] = str(path_to_current_class_model_joblib)
             else:
@@ -463,6 +463,7 @@ def _split_dataset_points(
     ):
     """Splits the dataset in two, and saves the results into two csv files.  
     Returns the dataframe built on the split_frac, so if split_frac=0.7 the later prepare_data pipeline will be executed on the 0.7 dataset."""
+    dataset_split_path = Path(dataset_split_path)
     os.makedirs(dataset_split_path, exist_ok=True)
 
     prepared_data_output_path  = dataset_split_path / f'trained_on.pkl'
