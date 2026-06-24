@@ -75,7 +75,7 @@ def load_inference_input_df_and_strip_labels(cfg):
     split_frac_of_trained_models = load_from_json(Path(cfg.path.shared) / "metadata" / "df_info.json").get('split_frac', None)
     if split_frac_of_trained_models in [None, 100.0]:
         raise ValueError(f"The models were trained on a bad split_frac: {split_frac_of_trained_models}, please re-run the entire pipeline with the correct 'prepare.topk_inference.split_frac' parameter.")
-    
+
     inference_input_path = Path(cfg.path.dataset_split) / str(split_frac_of_trained_models) / f'inference_input.pkl'
     if not os.path.exists(inference_input_path):
         raise ValueError(f"[{inference_input_path}] does not exist. Cannot topk-infer with no input data.\n\tDid you run prepare_data with the correct 'topk_inference' parameters?")
@@ -89,18 +89,18 @@ def load_inference_input_df_and_strip_labels(cfg):
 
 # topk_inference.py data=nb15_v2 name=topk_inference classifier=random_forest
 def main():
-    """Main entry point for data preparation."""
+    """Main entry point for topk inference over a stored inference_input dataset."""
 
     cfg = load_config(
         config_path=Path(__file__).parent.parent / "configs",
         config_name="config",
-        overrides=sys.argv[1:] + ['clustering=kmeans', 'data=nb15_v2', 'name=topk_inference_kmeans', 'classifier=random_forest'],
+        overrides=sys.argv[1:]# TODO REMOVE:# + ['clustering=kmeans', 'data=nb15_v2', 'name=topk_inference_kmeans', 'classifier=random_forest'],
     )
 
     k = cfg.topk_inference.k
 
     weak_clf = load_from_joblib(Path(cfg.path.models) / 'model.joblib') # classifier trained on raw features only
-    ext_clf = load_from_joblib(Path(cfg.path.models) / 'model_extended.joblib') # classifier trained on complexity-extended features
+    ext_clf  = load_from_joblib(Path(cfg.path.models) / 'model_extended.joblib') # classifier trained on complexity-extended features
 
     cluster_models = load_from_json(file_path=Path(cfg.path.clustering_models) / 'class_to_model.json')[str(cfg.clustering.name)] # I am only interested in the current clustering algorithm
 
@@ -117,7 +117,7 @@ def main():
     # Place original labels back for future assessments and quality check
     inference_df['original_label'] = labels
 
-    save_df(df=inference_df, file_path=Path(cfg.path.topk_inference_out))
+    save_df(df=inference_df, file_path=Path(cfg.path.topk_inference_out) / 'results_with_original_labels.pkl')
 
 
 if __name__ == '__main__':
