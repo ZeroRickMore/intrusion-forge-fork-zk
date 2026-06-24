@@ -90,6 +90,23 @@ def ml_split(
     )
     return train_df, val_df, test_df
 
+def representative_split(
+        df,
+        split_frac,
+        random_state: int | None = None,
+        label_col: str | None = None,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Split a DataFrame into train, validation, and test sets with optional stratification."""
+
+        stratify = df[label_col] if label_col else None
+        train_df, rest = train_test_split(
+            df, 
+            train_size=split_frac, 
+            random_state=random_state, 
+            stratify=stratify
+        )
+
+        return train_df, rest
 
 class LogTransformer(BaseEstimator, TransformerMixin):
     """Apply log1p transformation to handle skewed data with zeros."""
