@@ -2,9 +2,10 @@ import numpy as np
 import pandas as pd
 
 
-def get_df_info(df: pd.DataFrame, *, label_col: str | None = None) -> dict:
+def get_df_info(df: pd.DataFrame, *, label_col: str | None = None, split_frac : float = 1) -> dict:
     """Return basic information about a DataFrame."""
     info = {
+        "split_frac" : split_frac,
         "shape": list(df.shape),
         "columns": list(df.columns),
         "dtypes": {col: str(dtype) for col, dtype in df.dtypes.to_dict().items()},
