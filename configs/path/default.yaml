@@ -4,7 +4,7 @@ out_base_path: resources/experiments/${name}/${data.file_name}_${seed}
 raw_data: resources/raw_data/${data.dir}/${data.file_name}.csv
 
 # output splits
-dataset_split: resources/raw_data/$(data.dir)/Dataset_Splits/${data.file_name}/$(prepare.topk_inference.split_frac)
+dataset_split: resources/raw_data/${data.dir}/Dataset_Splits/${data.file_name}/${prepare.topk_inference.split_frac}
 
 # Shared across classifiers (dataset-level)
 processed_data: ${path.out_base_path}/processed_data
@@ -17,4 +17,4 @@ pickle:             ${path.out_base_path}/${classifier.name}/pickle
 configs:            ${path.out_base_path}/${classifier.name}/configs
 figures:            ${path.out_base_path}/${classifier.name}/figures
 clustering_models:  ${path.out_base_path}/${classifier.name}/clustering_models
-topk_inference_out: $(path.out_base_path)/${classifier.name}/topk_inference_results_$(prepare.topk_inference.split_frac)
+topk_inference_out: ${path.out_base_path}/${classifier.name}/topk_inference_results_${prepare.topk_inference.split_frac}
