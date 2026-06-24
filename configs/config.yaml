@@ -27,7 +27,10 @@ grid_search:
 
 prepare:
   force: false                       # re-run preprocessing+clustering even if shared outputs exist
-  save_clustering_models: True       # saves the best clustering model(s) into ${path.out_base_path}/topk_inference
+  topk_inference:                    # topk_inference settings for data preparation. On the first run, everything has to be true.
+    save_clustering_models: True     # saves the best clustering model(s) into ${path.out_base_path}/topk_inference
+    split_dataset: True              # Splits the dataset into 2 parts, one used for the usual prepare_data pipeline, the other will stay untouched and will be later used by topk_inference
+    split_frac: 0.7                  # The fraction that will be used by the usual prepare_data pipeline. The remaining will be used as topk_inference input
 
 complexity:
   distance: ${distance}              # inherited from the top-level key — must match the clustering metric
