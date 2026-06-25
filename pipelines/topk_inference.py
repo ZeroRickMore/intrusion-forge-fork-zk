@@ -44,6 +44,8 @@ def top_k_predict(
 
         proba_ext = ext_clf.predict_proba(x_ext)
 
+        print(proba_ext)
+
         conf = np.max(proba_ext)
         pred = np.argmax(proba_ext)
 
@@ -92,6 +94,9 @@ def run_topk_predict_on_inference_input_df(
 
         predictions.append(pred)
         confidences.append(conf)
+
+        if i == 15:
+            sys.exit("Stopping at 15 samples! It would take ages for this computation to end...")
 
     print(f"- Finished topk-inference.")
 
