@@ -88,7 +88,7 @@ def run_topk_predict_on_inference_input_df(
             class_to_indices[cls].append(i)
 
     # Find the best pred and confidence by iterating over each sample per class, storing the last "best" in its index in an array of zeros
-    best_predictions = np.empty(inference_df.shape[0], dtype=str) # Each has the class label and not the class index
+    best_predictions = np.empty(inference_df.shape[0], dtype=object) # Each has the class label and not the class index
     best_confidences = np.zeros(inference_df.shape[0])
 
     what_is_happening = {} # TODO REMOVE
@@ -112,7 +112,7 @@ def run_topk_predict_on_inference_input_df(
 
     print(json.dumps(what_is_happening, indent=4)) # TODO REMOVE
     # input("Does this make sense?") # TODO REMOVE
-
+    
     return best_predictions, best_confidences
 
 def load_inference_input_df_and_strip_labels(cfg):
