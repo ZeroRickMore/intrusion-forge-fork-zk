@@ -459,7 +459,8 @@ def _split_dataset_points(
         dataset_split_path : str,
         split_frac : float,
         random_state : int | None = None,
-        label_col: str | None = None
+        label_col: str | None = None,
+        force: bool = False
     ):
     """Splits the dataset in two, and saves the results into two csv files.  
     Returns the dataframe built on the split_frac, so if split_frac=0.7 the later prepare_data pipeline will be executed on the 0.7 dataset."""
@@ -468,6 +469,9 @@ def _split_dataset_points(
 
     prepared_data_output_path  = dataset_split_path / f'trained_on.pkl'
     inference_data_output_path = dataset_split_path / f'inference_input.pkl'
+
+    if not force and os.path.exists(prepared_data_output_path) and os.path.exists(inference_data_output_path):
+        return load_df(prepared_data_output_path)
 
     prepared_data_df, inference_data_df = representative_split(df, split_frac, random_state, label_col)
 
@@ -505,7 +509,8 @@ def prepare(cfg):
             dataset_split_path=cfg.path.dataset_split,
             split_frac=cfg.prepare.topk_inference.split_frac,
             random_state=cfg.seed,
-            label_col=label_col
+            label_col=label_col,
+            force=cfg.prepare.force
         )
 
     train_df, val_df, test_df = preprocess_df(
