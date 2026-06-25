@@ -126,6 +126,10 @@ render:
 
 ## topk_inference
 topk-inference:
+	PYTHONPATH=. $(PYTHON) pipelines/topk_inference_vectorial.py $(HYDRA)
+
+## topk_inference
+topk-inference-single-sample:
 	PYTHONPATH=. $(PYTHON) pipelines/topk_inference.py $(HYDRA)
 
 ## run:                Parametric sweep — fix passed vars, iterate the rest   (DATA?, CLASSIFIER?, NAME, SEED, FORCE, EXTEND)
