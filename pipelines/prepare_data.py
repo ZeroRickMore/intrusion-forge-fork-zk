@@ -278,6 +278,10 @@ def preprocess_df(
     random_state,
     top_n,
     hash_buckets,
+    split_dataset,
+    split_frac,
+    force,
+    dataset_split_path
 ):
     """Preprocess dataframe: filter, encode, scale, and split."""
     logger.info(
@@ -289,6 +293,17 @@ def preprocess_df(
     df = drop_nans(df, num_cols + cat_cols + [label_col])
     df = query_filter(df, query=filter_query)
     df = rare_category_filter(df, [label_col], min_count=min_cat_count)
+
+    # Handle topk_inference dataset split (must be done AFTER data filtering steps such as drop_nans, query_filter, rare_category_filter!)
+    if split_dataset:
+        df = _split_dataset_points(
+            df=df,
+            dataset_split_path=dataset_split_path,
+            split_frac=split_frac,
+            random_state=random_state,
+            label_col=label_col,
+            force=force
+        )
 
     train_df, val_df, test_df = ml_split(
         df,
@@ -497,36 +512,41 @@ def prepare(cfg):
 
     logger.info("Loading and preprocessing data...")
     df = load_df(str(raw_data_path))
+
+    out = (
+        df[label_col]
+        .value_counts()
+        .rename_axis("label")
+        .reset_index(name="count")
+    )
+    out["percentage"] = out["count"] / out["count"].sum() * 100
+    print(out)
+    sys.exit()
     logger.info("Raw data loaded: %d rows, %d columns", *df.shape)
 
     df_info = get_df_info(df, label_col=label_col, split_frac=cfg.prepare.topk_inference.split_frac)
     dispatcher.publish(LogBundle.from_dict({"json/df_info": df_info}))
 
-    # Handle topk_inference dataset split
-    if cfg.prepare.topk_inference.split_dataset:
-        df = _split_dataset_points(
-            df=df,
-            dataset_split_path=cfg.path.dataset_split,
-            split_frac=cfg.prepare.topk_inference.split_frac,
-            random_state=cfg.seed,
-            label_col=label_col,
-            force=cfg.prepare.force
-        )
-
     train_df, val_df, test_df = preprocess_df(
         df,
         num_cols,
         cat_cols,
-        label_col,
+        label_col, # label_col
         cfg.data.filter_query,
         cfg.data.min_cat_count,
         cfg.data.train_frac,
         cfg.data.val_frac,
         cfg.data.test_frac,
-        cfg.seed,
+        cfg.seed, # random_state
         cfg.data.top_n,
         cfg.data.hash_buckets,
+        cfg.prepare.topk_inference.split_dataset, # split_dataset bool
+        cfg.prepare.topk_inference.split_frac, # split_frac
+        cfg.prepare.force, # force
+        cfg.path.dataset_split, # dataset_split_path
+        
     )
+
     train_df, val_df, test_df = (
         df.reset_index(drop=True) for df in [train_df, val_df, test_df]
     )
