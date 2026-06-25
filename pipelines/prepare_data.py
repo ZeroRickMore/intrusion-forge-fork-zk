@@ -513,15 +513,15 @@ def prepare(cfg):
     logger.info("Loading and preprocessing data...")
     df = load_df(str(raw_data_path))
 
-    out = (
-        df[label_col]
-        .value_counts()
-        .rename_axis("label")
-        .reset_index(name="count")
-    )
-    out["percentage"] = out["count"] / out["count"].sum() * 100
-    print(out)
-    sys.exit()
+    # out = (
+    #     df[label_col]
+    #     .value_counts()
+    #     .rename_axis("label")
+    #     .reset_index(name="count")
+    # )
+    # out["percentage"] = out["count"] / out["count"].sum() * 100
+    # print(out)
+
     logger.info("Raw data loaded: %d rows, %d columns", *df.shape)
 
     df_info = get_df_info(df, label_col=label_col, split_frac=cfg.prepare.topk_inference.split_frac)
