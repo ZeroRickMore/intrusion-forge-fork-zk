@@ -33,19 +33,19 @@ def top_k_predict(
     best_confidence = -np.inf
     best_prediction = None
 
-    for class_numeric in tqdm(top_k_class_numerics, desc='Classes', position=1):
+    for class_numeric in top_k_class_numerics:
         class_label = label_mapping[str(class_numeric)]
         # Lazy-load model
         if isinstance(cluster_models[class_label], str):
             cluster_models[class_label] = load_from_joblib(cluster_models[class_label])
 
-        x_ext = get_extended_sample(sample=x, complexity_extension=complexity_features_per_class[str(class_numeric)])
+        # First extend it, then align it with the order of the features as they appear in the ext_clf
+        x_ext = get_extended_sample(sample=x, complexity_extension=complexity_features_per_class[str(class_numeric)])[ext_clf.named_steps["clf"].feature_names_in_]
 
         proba_ext = ext_clf.predict_proba(x_ext)
 
         conf = np.max(proba_ext)
         pred = np.argmax(proba_ext)
-
 
         if conf > best_confidence:
             best_confidence = conf
