@@ -18,6 +18,7 @@ def top_k_predict(
     weak_clf,
     ext_clf,
     cluster_models,
+    label_mapping,
     k,
 ):
     """
@@ -26,8 +27,8 @@ def top_k_predict(
     complexity-extended classifier.
     """
 
-    proba_weak = weak_clf.predict_proba(x.reshape(1, -1))[0]
-    top_k_classes = np.argsort(proba_weak)[-k:]
+    proba_weak = weak_clf.predict_proba(x)[0]
+    top_k_classes = [label_mapping[str(idx)] for idx in np.argsort(proba_weak)[-k:]]
 
     best_confidence = -np.inf
     best_prediction = None
@@ -60,29 +61,27 @@ def run_topk_predict_on_inference_input_df(
     weak_clf,
     ext_clf,
     cluster_models,
+    label_mapping,
     k
 ):
-    X = inference_df.to_numpy()
-
-    print(f"- Running topk-inference on {len(X):,} samples with k={k}.")
+    
+    print(f"- Running topk-inference on {inference_df.shape[0]:,} samples with k={k}.")
 
     predictions = []
     confidences = []
 
-    for x in tqdm(X, desc=f"Top-{k} inference", position=0):
+    for i in tqdm(range(inference_df.shape[0]), desc=f"Top-{k} inference", position=0):
         pred, conf = top_k_predict(
-            x=x,
+            x=inference_df.iloc[[i]],
             weak_clf=weak_clf,
             ext_clf=ext_clf,
             cluster_models=cluster_models,
+            label_mapping=label_mapping,
             k=k,
         )
 
         predictions.append(pred)
         confidences.append(conf)
-
-    inference_df["prediction"] = predictions
-    inference_df["confidence"] = confidences
 
     print(f"- Finished topk-inference.")
 
@@ -91,8 +90,7 @@ def run_topk_predict_on_inference_input_df(
     for cls, count in Counter(predictions).most_common():
         print(f"\tclass={cls:<5} || count={count}")
 
-    return inference_df
-
+    return predictions, confidences
 
 def load_inference_input_df_and_strip_labels(cfg):
 
@@ -160,29 +158,52 @@ def main():
     weak_clf = load_from_joblib(weak_clf_path)
     ext_clf = load_from_joblib(ext_clf_path)
 
-    print(f"- Loading clustering models mapping for clustering algorithm \"{cfg.clustering.name}\"")
+    print(ext_clf.named_steps["clf"].feature_names_in_)
+    sys.exit()
+
+    print(f"- Loading clustering models mapping for clustering algorithm \"{cfg.clustering.name}\", and label mappings for the entire dataset.")
 
     cluster_models = load_from_json(file_path=Path(cfg.path.clustering_models) / "class_to_model.json")[str(cfg.clustering.name)]
+    label_mapping = load_from_json(Path(cfg.path.shared) / "metadata" / "df_meta.json")["label_mapping"]
 
-    inference_df, labels = load_inference_input_df_and_strip_labels(cfg)
+    inference_df_full, labels = load_inference_input_df_and_strip_labels(cfg)
 
-    inference_df = run_topk_predict_on_inference_input_df(
+    # Remove features the clf was not trained on
+    expected_features_weak_clf = list(weak_clf.named_steps["clf"].feature_names_in_)
+    # expected_features_ext_clf  = set(ext_clf.named_steps["clf"].feature_names_in_)
+    # if expected_features_weak_clf != expected_features_ext_clf:
+    #     raise ValueError(f"- The two datasets seem to have been trained on a different feature set!\n"
+    #                      f"\t- Weak: {expected_features_weak_clf}\n"
+    #                      f"\t- Ext : {expected_features_ext_clf}\n\n"
+    #                      "- Cannot proceed...")
+    missing_features = set(expected_features_weak_clf) - set(inference_df_full.columns)
+    if missing_features:
+        raise ValueError(f"- Inference dataset missing required features that the models were trained on:\n{missing_features}.\n\n- Cannot proceed...")
+    inference_df = inference_df_full[expected_features_weak_clf]
+
+    # Find predictions and confidences, and append to df as columns
+    predictions, confidences = run_topk_predict_on_inference_input_df(
                     inference_df=inference_df,
                     weak_clf=weak_clf,
                     ext_clf=ext_clf,
                     cluster_models=cluster_models,
+                    label_mapping=label_mapping,
                     k=k
                 )
+    del inference_df
+
+    inference_df_full["prediction"] = predictions
+    inference_df_full["confidence"] = confidences
 
     print("- Re-attaching original labels...")
 
-    inference_df["original_label"] = labels
+    inference_df_full["original_label"] = labels
 
     output_path = Path(cfg.path.topk_inference_out) / "results_with_original_labels.pkl"
 
     print(f"- Saving results to {output_path}")
 
-    save_df(df=inference_df, file_path=output_path)
+    save_df(df=inference_df_full, file_path=output_path)
 
     print("- Topk-inference completed.")
 
