@@ -12,13 +12,13 @@ from src.core.utils import load_from_joblib, load_from_json
 from src.core.io import load_df, save_df
 from collections import Counter
 
-
 def top_k_predict(
     x,
     weak_clf,
     ext_clf,
     cluster_models,
     label_mapping,
+    complexity_features_per_class,
     k,
 ):
     """
@@ -28,21 +28,20 @@ def top_k_predict(
     """
 
     proba_weak = weak_clf.predict_proba(x)[0]
-    top_k_classes = [label_mapping[str(idx)] for idx in np.argsort(proba_weak)[-k:]]
+    top_k_class_numerics = np.argsort(proba_weak)[-k:]
 
     best_confidence = -np.inf
     best_prediction = None
 
-    for c in tqdm(top_k_classes, desc='Classes', position=1):
+    for class_numeric in tqdm(top_k_class_numerics, desc='Classes', position=1):
+        class_label = label_mapping[str(class_numeric)]
         # Lazy-load model
-        if isinstance(cluster_models[c], str):
-            cluster_models[c] = load_from_joblib(cluster_models[c])
+        if isinstance(cluster_models[class_label], str):
+            cluster_models[class_label] = load_from_joblib(cluster_models[class_label])
 
-        complexity = cluster_models[c].extract_complexity(x)
+        x_ext = get_extended_sample(sample=x, complexity_extension=complexity_features_per_class[str(class_numeric)])
 
-        x_ext = np.concatenate([np.asarray(x).ravel(), np.asarray(complexity).ravel(),])
-
-        proba_ext = ext_clf.predict_proba(x_ext.reshape(1, -1))[0]
+        proba_ext = ext_clf.predict_proba(x_ext)
 
         conf = np.max(proba_ext)
         pred = np.argmax(proba_ext)
@@ -55,6 +54,15 @@ def top_k_predict(
 
     return best_prediction, best_confidence
 
+def get_extended_sample(sample, complexity_extension):
+    new_sample = sample.copy()
+    if not isinstance(complexity_extension, dict):
+        raise TypeError(f"complexity_extension should be a dict, exactly what's inside of class_complexity.json per class.")
+    
+    for label in complexity_extension:
+        new_sample[label] = complexity_extension[label]
+
+    return new_sample
 
 def run_topk_predict_on_inference_input_df(
     inference_df,
@@ -62,6 +70,7 @@ def run_topk_predict_on_inference_input_df(
     ext_clf,
     cluster_models,
     label_mapping,
+    complexity_features_per_class,
     k
 ):
     
@@ -77,6 +86,7 @@ def run_topk_predict_on_inference_input_df(
             ext_clf=ext_clf,
             cluster_models=cluster_models,
             label_mapping=label_mapping,
+            complexity_features_per_class=complexity_features_per_class,
             k=k,
         )
 
@@ -158,13 +168,11 @@ def main():
     weak_clf = load_from_joblib(weak_clf_path)
     ext_clf = load_from_joblib(ext_clf_path)
 
-    print(ext_clf.named_steps["clf"].feature_names_in_)
-    sys.exit()
-
     print(f"- Loading clustering models mapping for clustering algorithm \"{cfg.clustering.name}\", and label mappings for the entire dataset.")
 
     cluster_models = load_from_json(file_path=Path(cfg.path.clustering_models) / "class_to_model.json")[str(cfg.clustering.name)]
     label_mapping = load_from_json(Path(cfg.path.shared) / "metadata" / "df_meta.json")["label_mapping"]
+    complexity_features_per_class = load_from_json(Path(cfg.path.shared) / "class_complexity.json")
 
     inference_df_full, labels = load_inference_input_df_and_strip_labels(cfg)
 
@@ -188,6 +196,7 @@ def main():
                     ext_clf=ext_clf,
                     cluster_models=cluster_models,
                     label_mapping=label_mapping,
+                    complexity_features_per_class=complexity_features_per_class,
                     k=k
                 )
     del inference_df
