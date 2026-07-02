@@ -108,7 +108,7 @@ def representative_split(
 
         return train_df, rest
 
-class LogTransformer(BaseEstimator, TransformerMixin):
+'''class LogTransformer(BaseEstimator, TransformerMixin):
     """Apply log1p transformation to handle skewed data with zeros."""
 
     def __init__(self, *, epsilon: float = 1e-10):
@@ -118,9 +118,9 @@ class LogTransformer(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
-        return np.log1p(np.maximum(X, 0) + self.epsilon)
+        return np.log1p(np.maximum(X, 0) + self.epsilon)'''
 
-'''
+
 class LogTransformer(BaseEstimator, TransformerMixin):
     """Apply log1p transformation to handle skewed data with zeros."""
 
@@ -146,9 +146,9 @@ class LogTransformer(BaseEstimator, TransformerMixin):
         result += self.epsilon
         np.log1p(result, out=result)
         return pd.DataFrame(result, index=idx, columns=cols) if cols is not None else result
-'''
 
-class TopNHashEncoder(BaseEstimator, TransformerMixin):
+
+'''class TopNHashEncoder(BaseEstimator, TransformerMixin):
     """Hybrid categorical encoder: top-N categories + hash buckets for rare/OOV values.
 
     Encoding scheme:
@@ -214,9 +214,9 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
                 else:
                     ids.append(self.missing_token)
             out[col] = np.asarray(ids, dtype=self.dtype)
-        return pd.DataFrame(out, index=X.index)
+        return pd.DataFrame(out, index=X.index)'''
 
-'''
+
 class TopNHashEncoder(BaseEstimator, TransformerMixin):
     """Hybrid categorical encoder: top-N categories + hash buckets for rare/OOV values.
 
@@ -287,7 +287,7 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
                     ids.append(self.missing_token)
             out[col] = np.asarray(ids, dtype=self.dtype)
         return pd.DataFrame(out, index=X.index)
-'''
+
 
 def encode_labels(
     train_df: pd.DataFrame,
