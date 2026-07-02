@@ -115,6 +115,19 @@ class LogTransformer(BaseEstimator, TransformerMixin):
         self.epsilon = epsilon
 
     def fit(self, X, *, y=None):
+        return self
+
+    def transform(self, X):
+        return np.log1p(np.maximum(X, 0) + self.epsilon)
+
+'''
+class LogTransformer(BaseEstimator, TransformerMixin):
+    """Apply log1p transformation to handle skewed data with zeros."""
+
+    def __init__(self, *, epsilon: float = 1e-10):
+        self.epsilon = epsilon
+
+    def fit(self, X, *, y=None):
         self._feature_names_in = list(X.columns) if hasattr(X, "columns") else None
         return self
 
@@ -133,8 +146,77 @@ class LogTransformer(BaseEstimator, TransformerMixin):
         result += self.epsilon
         np.log1p(result, out=result)
         return pd.DataFrame(result, index=idx, columns=cols) if cols is not None else result
+'''
 
+class TopNHashEncoder(BaseEstimator, TransformerMixin):
+    """Hybrid categorical encoder: top-N categories + hash buckets for rare/OOV values.
 
+    Encoding scheme:
+      0              — missing / NaN
+      1 … top_n      — top-N most frequent categories
+      top_n+1 …      — hash buckets for rare/OOV categories
+    """
+
+    def __init__(
+        self,
+        *,
+        top_n: int = 256,
+        hash_buckets: int = 1024,
+        missing_token: int = 0,
+        hash_key: str = "cat-encoder-v1",
+        dtype: type = np.int32,
+    ):
+        self.top_n = top_n
+        self.hash_buckets = hash_buckets
+        self.missing_token = missing_token
+        self.hash_key = hash_key
+        self.dtype = dtype
+
+    def _hash_bucket(self, col: str, value, n: int) -> int:
+        s = "NA" if pd.isna(value) else str(value)
+        digest = hashlib.blake2b(
+            f"{self.hash_key}|{col}|{s}".encode(), digest_size=8
+        ).digest()
+        return int.from_bytes(digest, byteorder="little") % n
+
+    def fit(self, X: pd.DataFrame, *, y=None):
+        if self.top_n < 0 or self.hash_buckets < 0:
+            raise ValueError("top_n and hash_buckets must be non-negative.")
+        X = pd.DataFrame(X)
+        self.columns_ = list(X.columns)
+        self.category_maps_ = {
+            col: {
+                cat: i + 1
+                for i, cat in enumerate(
+                    X[col].value_counts(dropna=True).nlargest(self.top_n).index
+                )
+            }
+            for col in self.columns_
+        }
+        return self
+
+    def transform(self, X: pd.DataFrame) -> pd.DataFrame:
+        X = pd.DataFrame(X)
+        hashed_start = 1 + self.top_n
+        out = {}
+        for col in (c for c in self.columns_ if c in X.columns):
+            cmap = self.category_maps_[col]
+            ids = []
+            for val in X[col]:
+                if pd.isna(val):
+                    ids.append(self.missing_token)
+                elif val in cmap:
+                    ids.append(cmap[val])
+                elif self.hash_buckets > 0:
+                    ids.append(
+                        hashed_start + self._hash_bucket(col, val, self.hash_buckets)
+                    )
+                else:
+                    ids.append(self.missing_token)
+            out[col] = np.asarray(ids, dtype=self.dtype)
+        return pd.DataFrame(out, index=X.index)
+
+'''
 class TopNHashEncoder(BaseEstimator, TransformerMixin):
     """Hybrid categorical encoder: top-N categories + hash buckets for rare/OOV values.
 
@@ -205,7 +287,7 @@ class TopNHashEncoder(BaseEstimator, TransformerMixin):
                     ids.append(self.missing_token)
             out[col] = np.asarray(ids, dtype=self.dtype)
         return pd.DataFrame(out, index=X.index)
-
+'''
 
 def encode_labels(
     train_df: pd.DataFrame,

@@ -17,13 +17,13 @@ from src.core.log import (
 )
 from src.core.utils import flush_timing, skip_if_exists, timed, save_to_joblib, load_from_json, save_to_json
 
+
 from src.domain.analysis.metadata import (
     compute_clusters_metadata,
     compute_df_metadata,
     get_df_info,
 )
 from src.core.io import load_df, save_df
-from sklearn.cluster import MiniBatchKMeans
 from sklearn.preprocessing import RobustScaler
 
 from src.domain.data.preprocessing import (
@@ -39,29 +39,14 @@ from src.domain.data.preprocessing import (
 )
 from src.domain.analysis.complexity.shared import _l2_normalize
 from src.domain.clustering import build_cluster_fn
-from src.domain.clustering.base import assign_clusters_within_class, cluster_size_balance
+from src.domain.clustering.base import (
+    assign_clusters_within_class,
+    assign_nearest_centroid,
+    cluster_size_balance,
+)
 
 setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
-
-
-def _rekey_consensus_by_algo_name(diagnostics: dict, algo_names: list[str]) -> dict:
-    """Rewrite the `*_idx` diagnostics (pairwise agreement, ARI, voter weights) to use names."""
-    out = {k: v for k, v in diagnostics.items() if not k.endswith("_idx")}
-    pairwise_idx = diagnostics.get("pairwise_algo_agreement_idx", {})
-    out["pairwise_algo_agreement"] = {
-        f"{algo_names[int(k.split('-')[0])]}-{algo_names[int(k.split('-')[1])]}": v
-        for k, v in pairwise_idx.items()
-    }
-    ari_idx = diagnostics.get("algorithm_consensus_ari_idx", [])
-    out["algorithm_consensus_ari"] = {
-        algo_names[i]: ari_idx[i] for i in range(len(ari_idx))
-    }
-    weights_idx = diagnostics.get("voter_weights_idx", [])
-    out["voter_weights"] = {
-        algo_names[i]: weights_idx[i] for i in range(len(weights_idx))
-    }
-    return out
 
 
 def _absorb_small_clusters(
@@ -76,39 +61,6 @@ def _absorb_small_clusters(
     return np.where(mask, -1, labels), int(small.size), int(mask.sum())
 
 
-def _split_large_clusters(
-    labels: np.ndarray, X_fit: np.ndarray, target: int, floor: int, random_state: int
-) -> tuple[np.ndarray, int]:
-    """Split clusters larger than `target` using MiniBatchKMeans on the full cluster points.
-
-    Noise pseudo-clusters (-1) are skipped. Sub-cluster 0 keeps the original id;
-    additional sub-clusters receive fresh ids above the current maximum.
-    """
-    ids, counts = np.unique(labels[labels != -1], return_counts=True)
-    large_mask = counts > target
-    if not large_mask.any():
-        return labels, 0
-
-    labels = labels.copy()
-    next_id = int(ids.max()) + 1
-    n_added = 0
-
-    for cid, n in zip(ids[large_mask], counts[large_mask]):
-        k = min(int(np.ceil(n / target)), int(n) // floor)
-        if k < 2:
-            continue
-        idx = np.where(labels == cid)[0]
-        sub = MiniBatchKMeans(n_clusters=k, random_state=random_state).fit_predict(
-            X_fit[idx]
-        )
-        for s in range(1, k):
-            labels[idx[sub == s]] = next_id
-            next_id += 1
-        n_added += k - 1
-
-    return labels, n_added
-
-
 def _cluster_per_class(
     X_num: np.ndarray,
     y_class: np.ndarray,
@@ -116,37 +68,37 @@ def _cluster_per_class(
     *,
     X_cat: np.ndarray | None = None,
     algorithms: dict[str, dict],
-    consensus_threshold: float,
     max_fit_samples: int,
-    min_consensus_size: int,
     random_state: int,
     metric: str = "euclidean",
-    weight_voters: bool = True,
-    refine_geometry: bool = True,
-    refine_margin: float = 0.8,
     min_cluster_floor: int = 50,
-    target_cluster_size: int = 25000,
-    target_size_frac: float = 0.05,
+    max_clusters_total: int | None = None,
+    grid_target_cluster_size: int | None = None,
+    resolution_weight: float = 0.1,
     save_clustering_models : bool,
     clustering_models_base_path : Path,
     clustering_algorithm_name: str,
 ) -> tuple[np.ndarray, dict[int, np.ndarray], set[int], dict[str, dict]]:
     """Per-class clustering. Returns (labels, centroids, noise_cluster_ids, report).
 
-    Cluster IDs are globally unique via offset. Residual -1 noise points (from
-    single-HDBSCAN runs, clusters absorbed by `min_cluster_floor` are reassigned
-    to per-class pseudo-clusters; their IDs are collected in noise_cluster_ids.
-    """
+    Cluster IDs are globally unique via offset. Residual -1 noise points (and
+    clusters absorbed by `min_cluster_floor`) are reassigned to per-class
+    pseudo-clusters; their IDs are collected in noise_cluster_ids.
 
+    `max_clusters_total` caps the total number of genuine clusters so the complexity
+    subsample floor never exceeds the cap (= max_complexity_samples // floor). It is
+    split equally across classes; None leaves the count driven by the data-relative grid.
+    """
     n = X_num.shape[0]
-    target_eff = max(
-        2 * min_cluster_floor, min(round(n * target_size_frac), target_cluster_size)
+    max_clusters_per_class = (
+        max(2, max_clusters_total // len(classes))
+        if max_clusters_total is not None
+        else None
     )
     labels = np.full(n, -1, dtype=np.int64)
     centroids: dict[int, np.ndarray] = {}
     offset = 0
     report: dict[str, dict] = {}
-    algo_names = list(algorithms.keys())
 
     if save_clustering_models:
         path_to_clustering_class_to_model_json = Path(clustering_models_base_path) / 'class_to_model.json'
@@ -162,76 +114,42 @@ def _cluster_per_class(
         X_cat_cls = X_cat[mask] if X_cat is not None else None
 
         algo_reports: dict[str, dict] = {}
-        consensus_diag: dict = {}
-
-        def _reporter(name: str, result: dict, _store=algo_reports) -> None:
-            _store[name] = result
-
-        def _consensus_reporter(diag: dict, _store=consensus_diag) -> None:
-            _store.update(diag)
-
         cluster_fn = build_cluster_fn(
             algorithms=algorithms,
-            consensus_threshold=consensus_threshold,
             max_fit_samples=max_fit_samples,
             random_state=random_state,
-            min_consensus_size=min_consensus_size,
-            reporter=_reporter,
-            consensus_reporter=_consensus_reporter,
-            weight_voters=weight_voters,
-            refine_geometry=refine_geometry,
-            refine_margin=refine_margin,
-            min_cluster_floor=min_cluster_floor,
+            reporter=algo_reports.__setitem__,
             metric=metric,
+            max_clusters=max_clusters_per_class,
+            grid_target_cluster_size=grid_target_cluster_size,
+            resolution_weight=resolution_weight,
         )
-        raw_labels, clustering_models = cluster_fn(X_num_cls, X_cat_cls)
+        raw_labels, clustering_model = cluster_fn(X_num_cls, X_cat_cls)
 
         # Save the clustering models if required
         if save_clustering_models:
-            # clustering_models can be a single model or a dict. The dict is returned by the clustering function of the ensemble,
-            # otherwise if only one algorithm was used it will be just the model, which will be saved directly.
-            if len(algorithms)==1:
-                # Single algorithm (no ensemble)
-                path_to_current_class_model_joblib = Path(clustering_models_base_path) / str(str(current_class) + '___' + clustering_algorithm_name + '.joblib')
-                save_to_joblib(data=clustering_models, file_path=path_to_current_class_model_joblib)
-                class_to_cluster_model[clustering_algorithm_name][str(current_class)] = str(path_to_current_class_model_joblib)
-            else:
-                # Multiple algorithms (ensemble)
-                paths_to_current_class_model_joblib = []
-                for clustering_algorithm_name in clustering_models:
-                    path_to_current_class_model_joblib = Path(clustering_models_base_path) / str(str(current_class) + '___ensemble_' + clustering_algorithm_name + '.joblib')
-                    save_to_joblib(data=clustering_models[clustering_algorithm_name], file_path=path_to_current_class_model_joblib)
-                    paths_to_current_class_model_joblib.append(str(path_to_current_class_model_joblib))
-                
-                class_to_cluster_model[clustering_algorithm_name][str(current_class)] = paths_to_current_class_model_joblib 
+            # Single algorithm model storing (no ensemble)
+            path_to_current_class_model_joblib = Path(clustering_models_base_path) / str(str(current_class) + '___' + clustering_algorithm_name + '.joblib')
+            save_to_joblib(data=clustering_model, file_path=path_to_current_class_model_joblib)
+            class_to_cluster_model[clustering_algorithm_name][str(current_class)] = str(path_to_current_class_model_joblib)
 
         raw_labels, n_floor_clusters, n_floor_points = _absorb_small_clusters(
             raw_labels, min_cluster_floor
         )
-        raw_labels, n_split_added = _split_large_clusters(
-            raw_labels, X_num_cls, target_eff, min_cluster_floor, random_state
-        )
 
         n_cls = int(raw_labels.shape[0])
         n_noise_cls = int((raw_labels == -1).sum())
-        consensus_block = {
-            "n_clusters": int(np.unique(raw_labels[raw_labels != -1]).size),
-            "n_noise": n_noise_cls,
-            "noise_ratio": n_noise_cls / n_cls if n_cls > 0 else 0.0,
-            "size_balance": cluster_size_balance(raw_labels),
-            "floor_absorbed_clusters": n_floor_clusters,
-            "floor_absorbed_points": n_floor_points,
-            "split_added_clusters": n_split_added,
-        }
-        if consensus_diag:
-            consensus_block.update(
-                _rekey_consensus_by_algo_name(consensus_diag, algo_names)
-            )
-
         report[str(current_class)] = {
             "n_samples": n_cls,
             "algorithms": algo_reports,
-            "consensus": consensus_block,
+            "summary": {
+                "n_clusters": int(np.unique(raw_labels[raw_labels != -1]).size),
+                "n_noise": n_noise_cls,
+                "noise_ratio": n_noise_cls / n_cls if n_cls > 0 else 0.0,
+                "size_balance": cluster_size_balance(raw_labels),
+                "floor_absorbed_clusters": n_floor_clusters,
+                "floor_absorbed_points": n_floor_points,
+            },
         }
 
         cluster_ids = np.unique(raw_labels[raw_labels != -1])
@@ -243,10 +161,6 @@ def _cluster_per_class(
         del X_raw_cls
         if len(cluster_ids) > 0:
             offset += int(cluster_ids.max()) + 1
-
-    # Save the json information about the classes to the models used for them
-    if save_clustering_models:
-        save_to_json(data=class_to_cluster_model, file_path=path_to_clustering_class_to_model_json)
 
     # reassign noise points (-1) to per-class pseudo-clusters
     noise_cluster_ids: set[int] = set()
@@ -261,7 +175,37 @@ def _cluster_per_class(
                 noise_cluster_ids.add(next_id)
                 next_id += 1
 
+    # Save the json information about the classes to the models used for them
+    if save_clustering_models:
+        save_to_json(data=class_to_cluster_model, file_path=path_to_clustering_class_to_model_json)
+
     return labels, centroids, noise_cluster_ids, report
+
+def _split_dataset_points(
+        df,
+        dataset_split_path : str,
+        split_frac : float,
+        random_state : int | None = None,
+        label_col: str | None = None,
+        force: bool = False
+    ):
+    """Splits the dataset in two, and saves the results into two csv files.  
+    Returns the dataframe built on the split_frac, so if split_frac=0.7 the later prepare_data pipeline will be executed on the 0.7 dataset."""
+    dataset_split_path = Path(dataset_split_path)
+    os.makedirs(dataset_split_path, exist_ok=True)
+
+    prepared_data_output_path  = dataset_split_path / f'trained_on.pkl'
+    inference_data_output_path = dataset_split_path / f'inference_input.pkl'
+
+    if not force and os.path.exists(prepared_data_output_path) and os.path.exists(inference_data_output_path):
+        return load_df(prepared_data_output_path)
+
+    prepared_data_df, inference_data_df = representative_split(df, split_frac, random_state, label_col)
+
+    save_df(df=prepared_data_df, file_path=prepared_data_output_path)
+    save_df(df=inference_data_df,file_path=inference_data_output_path)
+
+    return prepared_data_df
 
 
 @timed
@@ -352,11 +296,9 @@ def _cluster_splits(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict, set[int]]:
     """Cluster train per class, then attach the `cluster` column to all splits.
 
-    Train points are labelled by the per-class clusterer; val/test points are
-    assigned inductively to the nearest train centroid within their own class
-    (no test information feeds the cluster definition). Returns the splits with
-    the new column, the cluster centroids and the pseudo-cluster ids; publishes
-    the clustering report.
+    Train is labelled by the per-class clusterer; val/test points are assigned
+    inductively to the nearest train centroid within their own class. Returns the
+    splits, centroids and pseudo-cluster ids; publishes the clustering report.
     """
     X_num = train_df[num_cols].to_numpy(dtype=np.float64)
     X_cat = train_df[cat_cols].to_numpy() if cat_cols else None
@@ -365,25 +307,25 @@ def _cluster_splits(
 
     logger.info("Running per-class clustering on train (n=%d)...", len(train_df))
     algorithms = OmegaConf.to_container(cfg.clustering.algorithms, resolve=True)
-    # voter weighting / geometric refinement are ensemble-only knobs (ignored for a single algo)
-    is_ensemble = len(algorithms) > 1
+    # Cap genuine clusters so the complexity subsample floor never exceeds the cap
+    # (floor·n_clusters ≤ max_complexity_samples). Ties cluster count to the complexity
+    # budget; split equally across classes inside _cluster_per_class.
+    max_clusters_total = (
+        cfg.complexity.max_complexity_samples // cfg.complexity.min_subsample_per_cluster
+    )
     labels, centroids, noise_cluster_ids, clustering_report = _cluster_per_class(
         X_num,
         y_class,
         all_classes,
         X_cat=X_cat,
         algorithms=algorithms,
-        consensus_threshold=cfg.clustering.consensus_threshold,
         max_fit_samples=cfg.clustering.max_fit_samples,
-        min_consensus_size=cfg.clustering.min_consensus_size,
         random_state=cfg.seed,
         metric=cfg.clustering.distance,
-        weight_voters=cfg.clustering.weight_voters if is_ensemble else True,
-        refine_geometry=cfg.clustering.refine_geometry if is_ensemble else True,
-        refine_margin=cfg.clustering.refine_margin if is_ensemble else 0.8,
         min_cluster_floor=cfg.clustering.min_cluster_floor,
-        target_cluster_size=cfg.clustering.target_cluster_size,
-        target_size_frac=cfg.clustering.target_size_frac,
+        max_clusters_total=max_clusters_total,
+        grid_target_cluster_size=cfg.clustering.grid_target_cluster_size,
+        resolution_weight=cfg.clustering.resolution_weight,
         save_clustering_models = cfg.prepare.topk_inference.save_clustering_models,
         clustering_models_base_path = cfg.path.clustering_models,
         clustering_algorithm_name=str(cfg.clustering.name)
@@ -402,13 +344,20 @@ def _cluster_splits(
     assigned: dict[str, pd.DataFrame] = {}
     for name, split_df in (("val", val_df), ("test", test_df)):
         split_df = split_df.copy()
-        split_df["cluster"] = assign_clusters_within_class(
-            split_df[num_cols].to_numpy(dtype=np.float64),
-            split_df[label_col].to_numpy(),
-            centroids,
-            cluster_to_class,
-            metric=cfg.clustering.distance,
-        )
+        if cfg.label_free_assignment:
+            split_df["cluster"] = assign_nearest_centroid(
+                split_df[num_cols].to_numpy(dtype=np.float64),
+                centroids,
+                metric=cfg.clustering.distance,
+            )
+        else:
+            split_df["cluster"] = assign_clusters_within_class(
+                split_df[num_cols].to_numpy(dtype=np.float64),
+                split_df[label_col].to_numpy(),
+                centroids,
+                cluster_to_class,
+                metric=cfg.clustering.distance,
+            )
         assigned[name] = split_df
     val_df, test_df = assigned["val"], assigned["test"]
 
@@ -468,34 +417,6 @@ def _publish_metadata(
     return metadata
 
 
-
-def _split_dataset_points(
-        df,
-        dataset_split_path : str,
-        split_frac : float,
-        random_state : int | None = None,
-        label_col: str | None = None,
-        force: bool = False
-    ):
-    """Splits the dataset in two, and saves the results into two csv files.  
-    Returns the dataframe built on the split_frac, so if split_frac=0.7 the later prepare_data pipeline will be executed on the 0.7 dataset."""
-    dataset_split_path = Path(dataset_split_path)
-    os.makedirs(dataset_split_path, exist_ok=True)
-
-    prepared_data_output_path  = dataset_split_path / f'trained_on.pkl'
-    inference_data_output_path = dataset_split_path / f'inference_input.pkl'
-
-    if not force and os.path.exists(prepared_data_output_path) and os.path.exists(inference_data_output_path):
-        return load_df(prepared_data_output_path)
-
-    prepared_data_df, inference_data_df = representative_split(df, split_frac, random_state, label_col)
-
-    save_df(df=prepared_data_df, file_path=prepared_data_output_path)
-    save_df(df=inference_data_df,file_path=inference_data_output_path)
-
-    return prepared_data_df
-
-
 @timed
 def prepare(cfg):
     """Prepare data given a configuration object."""
@@ -528,23 +449,22 @@ def prepare(cfg):
     dispatcher.publish(LogBundle.from_dict({"json/df_info": df_info}))
 
     train_df, val_df, test_df = preprocess_df(
-        df,
-        num_cols,
-        cat_cols,
-        label_col, # label_col
-        cfg.data.filter_query,
-        cfg.data.min_cat_count,
-        cfg.data.train_frac,
-        cfg.data.val_frac,
-        cfg.data.test_frac,
-        cfg.seed, # random_state
-        cfg.data.top_n,
-        cfg.data.hash_buckets,
-        cfg.prepare.topk_inference.split_dataset, # split_dataset bool
-        cfg.prepare.topk_inference.split_frac, # split_frac
-        cfg.prepare.force, # force
-        cfg.path.dataset_split, # dataset_split_path
-        
+        df=df,
+        num_cols=num_cols,
+        cat_cols=cat_cols,
+        label_col=label_col,
+        filter_query=cfg.data.filter_query,
+        min_cat_count=cfg.data.min_cat_count,
+        train_frac=cfg.data.train_frac,
+        val_frac=cfg.data.val_frac,
+        test_frac=cfg.data.test_frac,
+        random_state=cfg.seed,
+        top_n=cfg.data.top_n,
+        hash_buckets=cfg.data.hash_buckets,
+        split_dataset=cfg.prepare.topk_inference.split_dataset, # split_dataset bool
+        split_frac=cfg.prepare.topk_inference.split_frac, # split_frac
+        force=cfg.prepare.force, # force
+        dataset_split_path=cfg.path.dataset_split, # dataset_split_path
     )
 
     train_df, val_df, test_df = (

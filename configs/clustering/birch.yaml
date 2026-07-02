@@ -1,12 +1,9 @@
 name: 'birch'
 distance: ${distance}              # inherited from the top-level key
 max_fit_samples: 20000
-consensus_threshold: 0.5
-min_consensus_size: 1
-min_cluster_floor: 5               # guard against degenerate K in grid search; post-hoc absorption is near-zero
-target_cluster_size: 25000         # clusters above this size are split into sub-clusters (post-hoc, full-data MiniBatchKMeans)
-target_size_frac: 0.05             # adaptive: effective target = clamp(2*floor, total_n * frac, target_cluster_size)
+min_cluster_floor: 20              # min genuine cluster size (smaller → noise). Keep ≥ complexity.min_subsample_per_cluster
+grid_target_cluster_size: 200      # finest n_clusters candidate targets ~this avg cluster size (k≈n/this); band fans coarser ×2 per step. Count-based algos only. Total cluster count is also capped at max_complexity_samples//min_subsample_per_cluster (split per class) by the pipeline
+resolution_weight: 0.5             # resolution tilt strength: prefer finer partitions unless a coarser one's silhouette is >this better. Higher → more clusters (more downstream regression support)
 algorithms:
-  birch:
-    n_clusters: [4, 8, 16, 32, 64, 128]
+  birch:                             # n_clusters derived per class
     branching_factor: 50

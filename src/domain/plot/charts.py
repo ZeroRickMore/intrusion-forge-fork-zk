@@ -517,10 +517,15 @@ def scatter_plot(
     title: str = "",
     show_legend: bool = True,
     legend_max_items: int = 20,
+    legend_on_top: bool = False,
     figsize: tuple[float, float] = (6.5, 5.0),
     ax: Axes | None = None,
 ) -> Plot | None:
-    """Scatter 2D with label-coloring and optional highlight mask."""
+    """Scatter 2D with label-coloring and optional highlight mask.
+
+    `legend_on_top` renders an opaque legend above the points (high z-order),
+    trading the occluded points for a cleaner figure.
+    """
     X = np.asarray(X)
     labels = np.asarray(labels)
     if X.ndim != 2 or X.shape[1] != 2:
@@ -655,7 +660,14 @@ def scatter_plot(
                 )
             ncol = 1 if len(handles) <= 6 else 2 if len(handles) <= 12 else 3
             loc = _smart_legend_loc(ax, X[~noise]) if (~noise).any() else "best"
-            ax.legend(handles=handles, loc=loc, ncol=ncol)
+            legend = ax.legend(
+                handles=handles,
+                loc=loc,
+                ncol=ncol,
+                framealpha=1.0 if legend_on_top else None,
+            )
+            if legend_on_top:
+                legend.set_zorder(100)
 
     _apply_labels(ax, x_label, y_label, title)
     return _finalize(fig)
@@ -860,4 +872,129 @@ def beeswarm_plot(
         returned_ax.set_title(title, fontsize=10)
     if figsize is not None:
         fig.set_size_inches(figsize)
+    return _fig_to_plot(fig)
+
+
+def _fit_label(d: str, fit: dict) -> str:
+    """One-line `α = mean±std, R² = r2` annotation for a distance's cost fit."""
+    parts = [f"{d}: α = {fit['alpha_mean']:.3f}"]
+    if fit.get("alpha_std"):
+        parts.append(f" ± {fit['alpha_std']:.3f}")
+    if fit.get("r2_min") is not None:
+        parts.append(f", R² = {fit['r2_min']:.4f}")
+    return "".join(parts)
+
+
+def _m_label(m: float) -> str:
+    """Compact label for a sample count, e.g. 50000 -> '50k'."""
+    return f"{m / 1000:.0f}k" if m >= 1000 else f"{m:.0f}"
+
+
+def cost_model_plot(
+    points_by_distance: dict[str, dict],
+    fits_by_distance: dict[str, dict],
+    share_by_distance: dict[str, dict],
+    *,
+    m_prod: float | None = None,
+    reference_slope: float = 2.0,
+    figsize: tuple[float, float] = (10.0, 4.0),
+) -> Plot:
+    """k-NN graph build-cost figure for the paper.
+
+    Panel (a) — log-log scaling: per distance, the measured medians (seed mean with
+    min–max whiskers) and the fitted power law T = c·m^alpha, plus a slope-
+    `reference_slope` Theta(m^2) guide anchored to the lowest series. When `m_prod`
+    is given, a vertical marker shows the production operating point (the subsample
+    cap the pipeline actually runs at). Panel (b) — how the end-to-end runtime splits
+    at that operating point, one 100%-stacked bar per distance (complexity vs rest).
+
+    `points_by_distance[d]` = {m, build_mean, build_min, build_max} (arrays over the
+    m-grid); `fits_by_distance[d]` = {alpha_mean, alpha_std, c_mean, r2_min};
+    `share_by_distance[d]` = {complexity_s, non_complexity_s, share}. Distances are
+    drawn in sorted order so colours are stable; a single distance degrades cleanly.
+    """
+    distances = sorted(points_by_distance)
+    colors = {d: PALETTE[i % len(PALETTE)] for i, d in enumerate(distances)}
+    fig, (ax_scale, ax_share) = plt.subplots(1, 2, figsize=figsize)
+
+    # (a) log-log scaling -----------------------------------------------------
+    anchor: tuple[float, float] | None = None  # lowest first point, for the guide
+    all_m: list[float] = []
+    for d in distances:
+        pts = points_by_distance[d]
+        m = np.asarray(pts["m"], dtype=float)
+        mean = np.asarray(pts["build_mean"], dtype=float)
+        lo = np.asarray(pts["build_min"], dtype=float)
+        hi = np.asarray(pts["build_max"], dtype=float)
+        color = colors[d]
+        all_m.extend(m.tolist())
+        ax_scale.errorbar(
+            m, mean, yerr=[mean - lo, hi - mean],
+            fmt="o", ms=5, color=color, ecolor=color, elinewidth=0.8,
+            capsize=2, zorder=3, label=d,
+        )
+        fit = fits_by_distance.get(d, {})
+        c, alpha = fit.get("c_mean"), fit.get("alpha_mean")
+        if c is not None and alpha is not None and m.size >= 2:
+            xx = np.geomspace(m.min(), m.max(), 64)
+            ax_scale.plot(xx, c * xx**alpha, color=color, linewidth=1.4, zorder=2)
+        if m.size and (anchor is None or mean[0] < anchor[1]):
+            anchor = (float(m[0]), float(mean[0]))
+
+    if anchor is not None and len(all_m) >= 2 and min(all_m) < max(all_m):
+        xx = np.geomspace(min(all_m), max(all_m), 32)
+        m0, t0 = anchor
+        ax_scale.plot(
+            xx, t0 * (xx / m0) ** reference_slope,
+            color=NEUTRAL_COLOR, linewidth=1.0, linestyle="--", zorder=1,
+            label=f"slope {reference_slope:g} (Θ(m²))",
+        )
+
+    ax_scale.set_xscale("log")
+    ax_scale.set_yscale("log")
+
+    if m_prod:
+        ax_scale.axvline(m_prod, color=MUTED_COLOR, linewidth=1.1, linestyle=":", zorder=1)
+        ax_scale.text(
+            m_prod, 0.97, f"production cap  m ≈ {_m_label(m_prod)} ",
+            transform=ax_scale.get_xaxis_transform(),
+            rotation=90, va="top", ha="right", fontsize=7.5, color=MUTED_COLOR,
+        )
+
+    text = "\n".join(_fit_label(d, fits_by_distance[d]) for d in distances if d in fits_by_distance)
+    if text:
+        ax_scale.text(
+            0.05, 0.95, text, transform=ax_scale.transAxes, va="top", ha="left",
+            fontsize=8, bbox=dict(facecolor="white", edgecolor="#cccccc", boxstyle="round,pad=0.3"),
+        )
+    _apply_labels(ax_scale, "training subsample m", "k-NN build time (s)", "(a) build-cost scaling")
+    ax_scale.grid(True, which="both", alpha=0.15, linewidth=0.5)
+    ax_scale.legend(loc="lower right", fontsize=8)
+
+    # (b) runtime breakdown at the production operating point -----------------
+    for i, d in enumerate(distances):
+        sh = share_by_distance.get(d, {})
+        comp = float(sh.get("complexity_s", 0.0))
+        rest = float(sh.get("non_complexity_s", 0.0))
+        total = comp + rest
+        frac = comp / total if total else 0.0
+        ax_share.barh(i, frac, color=colors[d], zorder=3, label=f"{d} (complexity)")
+        ax_share.barh(
+            i, 1.0 - frac, left=frac, color=NEUTRAL_COLOR, zorder=2,
+            label="rest of pipeline" if i == 0 else None,
+        )
+        ax_share.text(min(frac + 0.02, 0.9), i, f"{frac * 100:.0f}%", va="center", ha="left", fontsize=9)
+
+    ax_share.set_yticks(np.arange(len(distances)))
+    ax_share.set_yticklabels(distances)
+    ax_share.set_xlim(0, 1)
+    ax_share.grid(True, axis="x", alpha=0.15, linewidth=0.5)
+    cap = f" at production cap (m ≈ {_m_label(m_prod)})" if m_prod else ""
+    _apply_labels(
+        ax_share, "share of end-to-end runtime", "",
+        f"(b) where the time goes{cap}",
+    )
+    if distances:
+        ax_share.legend(loc="lower right", fontsize=8)
+
     return _fig_to_plot(fig)

@@ -15,9 +15,12 @@ from src.domain.analysis.complexity.shared import (
 )
 
 FitFn = Callable[..., np.ndarray]  # (X_num, X_cat=None, **params) -> labels
-ClusterFn = Callable[[np.ndarray, np.ndarray | None], np.ndarray]  # (X_num, X_cat) -> labels
-SilhouetteFn = Callable[[np.ndarray, np.ndarray | None, np.ndarray], float]  # (X_num, X_cat, labels) -> sil
-
+ClusterFn = Callable[
+    [np.ndarray, np.ndarray | None], np.ndarray
+]  # (X_num, X_cat) -> labels
+SilhouetteFn = Callable[
+    [np.ndarray, np.ndarray | None, np.ndarray], float
+]  # (X_num, X_cat, labels) -> sil
 
 
 def cluster_size_balance(labels: np.ndarray) -> float:
@@ -34,18 +37,7 @@ def cluster_size_balance(labels: np.ndarray) -> float:
     return h / float(np.log(k))
 
 
-def floor_coverage(labels: np.ndarray, floor: int) -> float:
-    """Fraction of non-noise points belonging to clusters of size >= floor."""
-    mask = labels != -1
-    if not mask.any():
-        return 0.0
-    _, inverse, counts = np.unique(
-        labels[mask], return_inverse=True, return_counts=True
-    )
-    return float((counts[inverse] >= floor).mean())
-
-
-def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float) -> dict:
+def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float, model : ClusterMixin) -> dict:
     """Headline metrics for a single clustering candidate."""
     n = int(labels.shape[0])
     n_noise = int((labels == -1).sum())
@@ -58,6 +50,7 @@ def _measure(labels: np.ndarray, score: float, combo: dict, duration_s: float) -
         "noise_ratio": n_noise / n if n > 0 else 0.0,
         "size_balance": cluster_size_balance(labels),
         "duration_s": duration_s,
+        "model" : model
     }
 
 
@@ -219,44 +212,40 @@ def grid_search(
     *,
     max_fit_samples: int = 50_000,
     random_state: int = 0,
-    min_cluster_floor: int = 50,
-    noise_penalty: float = 0.5,
+    noise_penalty: float = 3.0,
+    resolution_weight: float = 0.1,
     silhouette_fn: SilhouetteFn | None = None,
     **fixed_params,
 ) -> tuple[dict, ClusterMixin]:
-    """Generic grid search over param_grid, scored by noise-penalised silhouette.
+    """Grid search scored by silhouette − noise_penalty·noise_ratio + resolution.
 
-    Score = silhouette − `noise_penalty` · noise_ratio. The silhouette is measured
-    on non-noise points only, so without a coverage term selection would prefer the
-    tightest cores regardless of how much data they leave as noise — for density
-    methods (HDBSCAN) the highest-noise combo systematically wins. The additive
-    penalty (chosen over multiplicative `(1 - noise_ratio)`, which mis-ranks
-    negative silhouettes) balances tightness against coverage. Methods without noise
-    (k-means, birch) have noise_ratio = 0, so their score is unaffected.
-    `_prune_grid_by_floor` upstream already blocks degenerate K values (average
-    cluster size < floor) from entering the grid.
+    The silhouette is monotone-decreasing in k on weakly-structured data, so on
+    its own it favours coarse partitions and starves the downstream
+    complexity→failure regression of cluster-level support. A gentle
+    `resolution_weight`-scaled tilt, increasing with the cluster count and
+    self-normalised by the finest partition in the sweep, is added so a flat
+    silhouette drifts to the fine end of the (data-relative) `n_clusters` band;
+    a genuine silhouette peak still dominates the small tilt, so well-separated
+    data keeps its natural resolution. The tilt has no fixed target — the
+    resolution band lives in the candidate grid (see `compose._n_clusters_grid`),
+    not here.
 
-    `silhouette_fn` overrides the silhouette term (e.g. Gower-hybrid silhouette
-    for mixed-feature algorithms); the default is Euclidean on `X_num`.
+    Methods without noise (k-means, birch) score on the plain silhouette.
+    `silhouette_fn` overrides the silhouette term (e.g. Gower-hybrid for
+    mixed-feature algorithms); default is Euclidean on `X_num`. fixed_params are
+    forwarded to fit_fn unchanged.
 
-    Returns `{"best": entry, "sweep": [entry, ...]}` where every entry has
-    `{combo, score, silhouette, floor_coverage, n_clusters, n_noise,
-    noise_ratio, size_balance, duration_s}`. Failed fits are recorded with
-    `score=-inf` and `error=True`. Raises if no candidate produced a clustering.
-
-    fixed_params are forwarded unchanged to fit_fn on every call.
+    Returns {"best": entry, "sweep": [entry, ...]}; failed fits get score=-inf,
+    error=True. Raises if no candidate produced a clustering.
     """
     sub_num, sub_cat = _subsample(X_num, X_cat, max_fit_samples, random_state)
 
     keys = list(param_grid.keys())
     values = list(param_grid.values())
 
-    best_score = float("-inf")
-    best_entry: dict | None = None
-    best_model = None
-    fallback_entry: dict | None = None
     sweep: list[dict] = []
 
+    # Pass 1: fit each combo, record its silhouette (provisional score = silhouette).
     for combo_values in tqdm(
         itertools.product(*values),
         total=int(np.prod([len(v) for v in values])),
@@ -267,16 +256,19 @@ def grid_search(
         try:
             labels, model = fit_fn(sub_num, X_cat=sub_cat, **combo, **fixed_params)
         except Exception:
-            sweep.append({
-                "combo": combo,
-                "score": float("-inf"),
-                "n_clusters": 0,
-                "n_noise": 0,
-                "noise_ratio": 0.0,
-                "size_balance": 0.0,
-                "duration_s": time.perf_counter() - t0,
-                "error": True,
-            })
+            sweep.append(
+                {
+                    "combo": combo,
+                    "score": float("-inf"),
+                    "n_clusters": 0,
+                    "n_noise": 0,
+                    "noise_ratio": 0.0,
+                    "size_balance": 0.0,
+                    "duration_s": time.perf_counter() - t0,
+                    "error": True,
+                    "model" : model,
+                }
+            )
             continue
 
         duration = time.perf_counter() - t0
@@ -285,22 +277,31 @@ def grid_search(
             if silhouette_fn is not None
             else _score_silhouette(sub_num, labels)
         )
-        cov = floor_coverage(labels, min_cluster_floor)
-        noise_ratio = float((labels == -1).mean())
-        s = sil - noise_penalty * noise_ratio
-        entry = _measure(labels, s, combo, duration)
+        entry = _measure(labels, sil, combo, duration, model)
         entry["silhouette"] = sil
-        entry["floor_coverage"] = cov
         sweep.append(entry)
-        if fallback_entry is None:
-            fallback_entry = entry
-        if s > best_score:
-            best_score = s
-            best_entry = entry
-            best_model = model
 
+    # Pass 2: final score = silhouette − noise_penalty·noise_ratio + resolution
+    # tilt, where the tilt grows with the cluster count, self-normalised by the
+    # finest partition in the sweep. Done after the loop so HDBSCAN (whose k is
+    # only known post-fit) shares the same normalisation as the n_clusters grids.
+    valid = [e for e in sweep if not e.get("error")]
+    max_k = max((e["n_clusters"] for e in valid), default=0)
+    best_score = float("-inf")
+    best_entry: dict | None = None
+    best_model : ClusterMixin = None
+    for e in valid:
+        tilt = resolution_weight * (e["n_clusters"] / max_k) if max_k > 0 else 0.0
+        e["resolution_tilt"] = tilt
+        e["score"] = e["silhouette"] - noise_penalty * e["noise_ratio"] + tilt
+        if e["score"] > best_score:
+            best_score = e["score"]
+            best_model = e.pop("model")
+            best_entry = e
+            
     if best_entry is None:
-        best_entry = fallback_entry
+        best_model = sweep[0].pop("model")
+        best_entry = sweep[0] if sweep else None
 
     if best_entry is None:
         raise RuntimeError(

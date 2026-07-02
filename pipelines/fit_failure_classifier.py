@@ -175,8 +175,7 @@ def _aggregate_oof_results(oof: dict, feature_cols: list[str]) -> dict:
     """Aggregate out-of-fold predictions into the published regression-metrics block."""
     y_true, y_pred = oof["y_true"], oof["y_pred"]
     mean_importances = np.mean(oof["fold_importances"], axis=0)
-    # rank correlation between predicted and observed failure rate: the headline
-    # metric, robust to the heteroscedastic noise of a per-cluster proportion.
+    # headline metric: rank correlation between predicted and observed failure rate
     rho = spearmanr(y_pred, y_true)
 
     return {
@@ -223,25 +222,19 @@ def fit_failure_classifier(
     min_test_support: int = 5,
     analysis_bus: LogDispatcher | None = None,
 ) -> dict:
-    """Train a Random Forest *regressor* with nested CV to predict each cluster's
-    continuous failure rate from its separability features.
+    """Nested-CV Random Forest regressor predicting each cluster's failure rate
+    from its separability features.
 
-    The target is the `failure_rate` column of `cluster_stats` (computed by
-    `build_cluster_summary`). Clusters without a failure rate (no test samples)
-    or with fewer than `min_test_support` test samples are excluded — their rate
-    would be fabricated or near-random noise. Uses nested cross-validation: the
-    outer loop (StratifiedKFold on quantile bins of the rate, KFold fallback)
-    gives unbiased out-of-fold predictions, the inner GridSearchCV selects
-    hyperparameters. Metrics — Spearman ρ (headline), R², MAE — are aggregated
-    over the OOF predictions.
+    Target is `failure_rate` (from `build_cluster_summary`). Clusters with no test
+    samples or fewer than `min_test_support` are excluded (unreliable rate). Outer
+    loop (StratifiedKFold on rate quantile bins, KFold fallback) gives unbiased OOF
+    predictions; inner GridSearchCV tunes hyperparameters. Headline metric: Spearman ρ.
     """
     logger.info("Running failure classifier ...")
     df = pd.DataFrame.from_dict(cluster_stats, orient="index")
 
-    # Noise pseudo-clusters aggregate density outliers that have no geometric
-    # substructure: their complexity vector is an unreliable average, so they
-    # are excluded from the meta-model (we predict failure only for clusters
-    # with genuine geometry). Their test-support share = the coverage cost.
+    # Noise pseudo-clusters have no genuine geometry, so they are excluded from the
+    # meta-model; their test-support share is the coverage cost.
     is_noise = (
         df["is_noise_cluster"].fillna(0).astype(bool)
         if "is_noise_cluster" in df
@@ -366,16 +359,15 @@ def fit_failure_classifier(
         **context_metrics,
         **_aggregate_oof_results(oof, feature_cols),
     }
-    # Selective prediction: what the predicted failure rate is worth operationally
-    # (reject high-risk regions → accuracy on the retained set). Uses the OOF
-    # predictions (honest, label-free at inference) weighted by test support.
+    # Selective prediction: reject high predicted-risk clusters → accuracy on the
+    # retained set, from support-weighted OOF predictions.
     support = df.loc[oof["indices"], "n_test"].astype(float).to_numpy()
     cluster_class = df.loc[oof["indices"], "cluster_class"].to_numpy()
     results["risk_coverage"] = selective_prediction_metrics(
         oof["y_pred"], oof["y_true"], support
     )
-    # Class-balanced view (macro-recall) — exposes whether error-greedy rejection
-    # would sacrifice minority classes, the blind spot of pooled accuracy.
+    # Class-balanced view (macro-recall): exposes whether rejection sacrifices
+    # minority classes, the blind spot of pooled accuracy.
     results["selective_macro_recall"] = selective_recall_metrics(
         oof["y_pred"], oof["y_true"], support, cluster_class
     )

@@ -31,21 +31,15 @@ def compute_df_metadata(
     benign_tag: str,
     *,
     label_mapping: dict | None = None,
-    weights_key: str | None = None,
 ) -> dict:
-    """Compute metadata dictionary for one or more named DataFrames.
+    """Compute the metadata dict for named DataFrame splits.
 
-    Args:
-        splits: Mapping of ``tag → DataFrame`` (e.g. ``{"train": …, "val": …}``).
-        weights_key: Tag of the split used for class-weight computation.
-            Defaults to ``"train"`` if present, otherwise the first key.
+    Class weights are computed on the "train" split (or the first split if absent).
     """
     if not splits:
         raise ValueError("splits must contain at least one DataFrame.")
 
-    if weights_key is None:
-        weights_key = "train" if "train" in splits else next(iter(splits))
-    ref_df = splits[weights_key]
+    ref_df = splits["train"] if "train" in splits else next(iter(splits.values()))
 
     class_counts = ref_df[label_col].value_counts().sort_index()
     class_weights = len(ref_df) / (len(class_counts) * class_counts)

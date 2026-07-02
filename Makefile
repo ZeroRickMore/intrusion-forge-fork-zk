@@ -4,10 +4,11 @@
 # One parametric command for sweeps. Variables passed on the command line are
 # FIXED; those omitted are ITERATED.
 #
-#   make run            NAME=my_exp                                # all datasets × ML + format-compatible DL
-#   make run            NAME=my_exp DATA=letter_recognition        # 1 dataset × all compatible classifiers
-#   make run            NAME=my_exp CLASSIFIER=random_forest       # all datasets × 1 classifier
-#   make run            NAME=my_exp DATA=cic_2018_v2 CLASSIFIER=tabular   # single (ds, clf)
+#   make run            NAME=my_exp                                # all datasets × ML+DL × all clustering algos
+#   make run            NAME=my_exp DATA=letter_recognition        # 1 dataset × all compatible classifiers × all clustering
+#   make run            NAME=my_exp CLASSIFIER=random_forest       # all datasets × 1 classifier × all clustering
+#   make run            NAME=my_exp CLUSTERING=kmeans              # all datasets × all classifiers × 1 clustering
+#   make run            NAME=my_exp DATA=cic_2018_v2 CLASSIFIER=tabular CLUSTERING=kmeans   # single (ds, clf, clustering)
 #
 # Single-stage targets (DATA + CLASSIFIER explicit):
 #   make prepare           DATA=cic_2018_v2 NAME=my_exp
@@ -22,7 +23,8 @@
 #   EXTEND=1              in `run`, adds classify-extended (SHAP) to the flow for every (ds, clf)
 #   LABELFREE=1           build the extended splits with label-free nearest-centroid assignment
 #                         (injection honesty control; pair with EXTEND=1 for the full flow)
-#   CLUSTERING=<name>     select clustering strategy (ensemble/kmeans/hdbscan/birch/spectral/kprototypes)
+#   CLUSTERING=<name>     fix the clustering strategy (ensemble/kmeans/hdbscan/birch/spectral/kprototypes);
+#                         omit it in `run` to sweep all of CLUSTERING_ALGOS into NAME_<algo>
 #
 # k-fold note: k-fold evaluation (kfold=true) is disabled automatically for LARGE_DATASETS
 #   (nb15_v2, bot_iot_v2, cic_2018_v2, ton_iot_v2) because millions of rows make it impractical.
@@ -38,8 +40,8 @@ NAME       ?= exp_euc
 SEED       ?= 42
 CLASSIFIER ?= tabular
 DISTANCE   ?= euclidean
-CLUSTERING ?= ensemble
-CLUSTERING_ALGOS ?= kmeans hdbscan spectral birch kprototypes ensemble
+CLUSTERING ?= kmeans
+CLUSTERING_ALGOS ?= kmeans hdbscan spectral birch kprototypes
 FORCE      ?=
 EXTEND     ?=
 export EXTEND
@@ -47,8 +49,9 @@ LABELFREE  ?=
 export LABELFREE
 
 # `run` distinguishes "passed on the command line" from "default" via $(origin).
-DATA_GIVEN := $(if $(filter command line,$(origin DATA)),1,)
-CLF_GIVEN  := $(if $(filter command line,$(origin CLASSIFIER)),1,)
+DATA_GIVEN    := $(if $(filter command line,$(origin DATA)),1,)
+CLF_GIVEN     := $(if $(filter command line,$(origin CLASSIFIER)),1,)
+CLUSTER_GIVEN := $(if $(filter command line,$(origin CLUSTERING)),1,)
 
 ML_CLASSIFIERS := \
     naive_bayes \
@@ -73,7 +76,8 @@ DATASET_FORMATS := \
     nb15_v2:mixed \
     ton_iot_v2:mixed \
     cic_2018_v2:mixed \
-    bot_iot_v2:mixed
+    bot_iot_v2:mixed \
+#    synthetic_test:mixed
 
 # Datasets too large for k-fold evaluation (millions of rows → hours per classifier).
 # kfold=false is injected automatically for these; override with kfold=true if needed.
@@ -85,8 +89,14 @@ FORCE_FLAG  := $(if $(FORCE),prepare.force=true complexity.force=true,)
 EXTEND_FLAGS := $(if $(LABELFREE),extend.generate=true extend.labelfree=true,$(if $(EXTEND),extend.generate=true,))
 KFOLD_FLAG  := $(if $(filter $(DATA),$(LARGE_DATASETS)),kfold=false,)
 
+# Cost analysis. `cost-model` characterises the k-NN build cost for one dataset over both
+# distances × COST_SEEDS: α (≈2, Θ(m²)) gets a confidence interval across seeds, while c
+# contrasts cosine vs euclidean (~4×). The aggregator scans EXPERIMENTS_DIR.
+COST_CLF        ?= random_forest
+COST_SEEDS      ?= 42 0 1
+EXPERIMENTS_DIR ?= resources/experiments
 
-.PHONY: prepare classify classify-extended extend complexity failure-classify render run run-clustering-sweep generate dashboard help
+.PHONY: prepare classify classify-extended extend complexity failure-classify render run cost-model cost-summary cost-aggregate generate dashboard help
 
 ## prepare:            Step 1 — preprocess raw CSV → parquet splits           (DATA, NAME, SEED, FORCE)
 prepare:
@@ -124,20 +134,14 @@ failure-classify: complexity
 render:
 	PYTHONPATH=. $(PYTHON) pipelines/render_plots.py $(HYDRA)
 
-## topk_inference
-topk-inference:
-	PYTHONPATH=. $(PYTHON) pipelines/topk_inference_vectorial.py $(HYDRA)
-
-## topk_inference
-topk-inference-single-sample:
-	PYTHONPATH=. $(PYTHON) pipelines/topk_inference.py $(HYDRA)
-
-## run:                Parametric sweep — fix passed vars, iterate the rest   (DATA?, CLASSIFIER?, NAME, SEED, FORCE, EXTEND)
+## run:                Whole flow — fix passed vars, iterate the rest (DATA?, CLASSIFIER?, CLUSTERING?)  (NAME, SEED, DISTANCE, FORCE, EXTEND)
 run:
 	@data_given="$(DATA_GIVEN)"; \
 	clf_given="$(CLF_GIVEN)"; \
+	clu_given="$(CLUSTER_GIVEN)"; \
 	requested_data="$(DATA)"; \
 	requested_clf="$(CLASSIFIER)"; \
+	if [ -n "$$clu_given" ]; then clu_list="$(CLUSTERING)"; else clu_list="$(CLUSTERING_ALGOS)"; fi; \
 	if [ -n "$$data_given" ]; then \
 		pairs=""; \
 		for entry in $(DATASET_FORMATS); do \
@@ -150,70 +154,89 @@ run:
 	else \
 		pairs="$(DATASET_FORMATS)"; \
 	fi; \
-	for entry in $$pairs; do \
-		ds=$${entry%%:*}; fmt=$${entry##*:}; \
-		if [ -n "$$clf_given" ]; then \
-			skip=""; \
-			if [ "$$requested_clf" = "tabular" ]   && [ "$$fmt" != "mixed" ];     then skip=1; fi; \
-			if [ "$$requested_clf" = "numerical" ] && [ "$$fmt" != "numerical" ]; then skip=1; fi; \
-			if [ -n "$$skip" ]; then \
-				echo "skip: $$requested_clf not compatible with $$ds ($$fmt)"; \
-				continue; \
-			fi; \
-			clf_list="$$requested_clf"; \
-		else \
-			if [ "$$fmt" = "mixed" ]; then \
-				clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS_MIXED)"; \
-			else \
-				clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS_NUMERICAL)"; \
-			fi; \
-		fi; \
+	for clu in $$clu_list; do \
+		if [ -n "$$clu_given" ]; then name="$(NAME)"; else name="$(NAME)_$$clu"; fi; \
 		echo ""; \
-		echo "══════════════════════════════════════════════"; \
-		echo " Dataset: $$ds  |  format=$$fmt  |  name=$(NAME)  seed=$(SEED)"; \
-		echo "══════════════════════════════════════════════"; \
-		$(MAKE) --no-print-directory prepare \
-			DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLUSTERING=$(CLUSTERING) \
-			DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
-		$(MAKE) --no-print-directory complexity \
-			DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLUSTERING=$(CLUSTERING) \
-			DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
-		for clf in $$clf_list; do \
-			echo ""; \
-			echo "── classifier: $$clf ─────────────────────────────"; \
-			$(MAKE) --no-print-directory classify \
-				DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-				CLUSTERING=$(CLUSTERING) DISTANCE=$(DISTANCE) || exit 1; \
-			$(MAKE) --no-print-directory failure-classify \
-				DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-				CLUSTERING=$(CLUSTERING) DISTANCE=$(DISTANCE) || exit 1; \
-			if [ -n "$(EXTEND)" ]; then \
-				$(MAKE) --no-print-directory classify-extended \
-					DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-					CLUSTERING=$(CLUSTERING) DISTANCE=$(DISTANCE) || exit 1; \
+		echo "##############################################"; \
+		echo " CLUSTERING = $$clu   →   name=$$name"; \
+		echo "##############################################"; \
+		for entry in $$pairs; do \
+			ds=$${entry%%:*}; fmt=$${entry##*:}; \
+			if [ -n "$$clf_given" ]; then \
+				skip=""; \
+				if [ "$$requested_clf" = "tabular" ]   && [ "$$fmt" != "mixed" ];     then skip=1; fi; \
+				if [ "$$requested_clf" = "numerical" ] && [ "$$fmt" != "numerical" ]; then skip=1; fi; \
+				if [ -n "$$skip" ]; then \
+					echo "skip: $$requested_clf not compatible with $$ds ($$fmt)"; \
+					continue; \
+				fi; \
+				clf_list="$$requested_clf"; \
+			else \
+				if [ "$$fmt" = "mixed" ]; then \
+					clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS_MIXED)"; \
+				else \
+					clf_list="$(ML_CLASSIFIERS) $(DL_CLASSIFIERS_NUMERICAL)"; \
+				fi; \
 			fi; \
-			$(MAKE) --no-print-directory render \
-				DATA=$$ds NAME=$(NAME) SEED=$(SEED) CLASSIFIER=$$clf \
-				CLUSTERING=$(CLUSTERING) DISTANCE=$(DISTANCE) || exit 1; \
+			echo ""; \
+			echo "══════════════════════════════════════════════"; \
+			echo " Dataset: $$ds  |  format=$$fmt  |  name=$$name  seed=$(SEED)"; \
+			echo "══════════════════════════════════════════════"; \
+			$(MAKE) --no-print-directory prepare \
+				DATA=$$ds NAME=$$name SEED=$(SEED) CLUSTERING=$$clu \
+				DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
+			$(MAKE) --no-print-directory complexity \
+				DATA=$$ds NAME=$$name SEED=$(SEED) CLUSTERING=$$clu \
+				DISTANCE=$(DISTANCE) $(FORCE_FLAG) || exit 1; \
+			for clf in $$clf_list; do \
+				echo ""; \
+				echo "── classifier: $$clf ─────────────────────────────"; \
+				$(MAKE) --no-print-directory classify \
+					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
+					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
+				$(MAKE) --no-print-directory failure-classify \
+					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
+					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
+				if [ -n "$(EXTEND)" ]; then \
+					$(MAKE) --no-print-directory classify-extended \
+						DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
+						CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
+				fi; \
+				$(MAKE) --no-print-directory render \
+					DATA=$$ds NAME=$$name SEED=$(SEED) CLASSIFIER=$$clf \
+					CLUSTERING=$$clu DISTANCE=$(DISTANCE) || exit 1; \
+			done; \
 		done; \
 	done
 	@echo ""
 	@echo "Done."
 
-## run-clustering-sweep: Full `run` once per clustering algorithm → NAME_<algo>  (DATA?, CLASSIFIER?, NAME, SEED, DISTANCE, FORCE, EXTEND)
-run-clustering-sweep:
-	@for c in $(CLUSTERING_ALGOS); do \
-		echo ""; \
-		echo "##############################################"; \
-		echo " CLUSTERING = $$c   →   name=$(NAME)_$$c"; \
-		echo "##############################################"; \
-		$(MAKE) --no-print-directory run \
-			NAME=$(NAME)_$$c CLUSTERING=$$c SEED=$(SEED) DISTANCE=$(DISTANCE) \
-			$(if $(DATA_GIVEN),DATA=$(DATA),) $(if $(CLF_GIVEN),CLASSIFIER=$(CLASSIFIER),) \
-			$(if $(FORCE),FORCE=$(FORCE),) $(if $(EXTEND),EXTEND=$(EXTEND),) \
-			$(if $(LABELFREE),LABELFREE=$(LABELFREE),) || exit 1; \
+## cost-model:         Deliverable A — k-NN build cost model T(m)=c·m^α over 2 distances × COST_SEEDS for one dataset  (DATA, NAME, COST_SEEDS, COST_CLF)
+cost-model:
+	@for dist in cosine euclidean; do \
+	  for seed in $(COST_SEEDS); do \
+	    nm=$(NAME)_$$dist; \
+	    echo ""; echo "== cost-model: $(DATA) [$$dist] seed=$$seed -> name=$$nm =="; \
+	    $(MAKE) --no-print-directory prepare \
+	      DATA=$(DATA) NAME=$$nm SEED=$$seed CLUSTERING=kmeans DISTANCE=$$dist || exit 1; \
+	    $(MAKE) --no-print-directory classify \
+	      DATA=$(DATA) NAME=$$nm SEED=$$seed CLASSIFIER=$(COST_CLF) CLUSTERING=kmeans DISTANCE=$$dist || exit 1; \
+	    PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py \
+	      data=$(DATA) name=$$nm seed=$$seed classifier=$(COST_CLF) \
+	      clustering=kmeans distance=$$dist || exit 1; \
+	  done; \
 	done
-	@echo ""; echo "Clustering sweep done: $(CLUSTERING_ALGOS)"
+	@echo ""; echo "cost-model done -> <NAME>_<distance>/$(DATA)_<seed>/shared/cost_model.json (α across COST_SEEDS; c cosine vs euclidean)."
+
+## cost-summary:       Roll up cost_model.json files: α mean±std per distance + c euclidean/cosine ratio  (EXPERIMENTS_DIR)
+cost-summary:
+	@PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py summary=$(EXPERIMENTS_DIR)
+	@echo ""; echo "cost-summary done -> $(EXPERIMENTS_DIR)/cost_model_summary.json."
+
+## cost-aggregate:     Deliverable B — cross-run cost↔quality table (ρ vs cluster count vs build time) from finished runs  (EXPERIMENTS_DIR)
+cost-aggregate:
+	@PYTHONPATH=. $(PYTHON) pipelines/cost_sweep.py aggregate=$(EXPERIMENTS_DIR)
+	@echo ""; echo "cost-aggregate done -> $(EXPERIMENTS_DIR)/cost_quality_table.json."
 
 ## generate:           Generate synthetic test dataset                        (ROWS)
 generate:
@@ -241,8 +264,10 @@ help:
 	@echo "  small (kfold=true):   statlog_landsat_satellite  thyroid_disease  letter_recognition  bank_marketing  covertype"
 	@echo "  large (kfold=false):  nb15_v2  ton_iot_v2  cic_2018_v2  bot_iot_v2"
 	@echo ""
-	@echo "Run examples:"
-	@echo "  make run NAME=x                                      # everything on everything"
-	@echo "  make run NAME=x DATA=letter_recognition              # 1 dataset, all compatible classifiers"
-	@echo "  make run NAME=x CLASSIFIER=random_forest             # all datasets, 1 classifier"
-	@echo "  make run NAME=x DATA=cic_2018_v2 CLASSIFIER=tabular  # single"
+	@echo "Run examples (omitted vars iterate; passed vars are fixed):"
+	@echo "  make run NAME=x                                      # all datasets × all classifiers × all clustering algos"
+	@echo "  make run NAME=x DATA=letter_recognition              # 1 dataset, all compatible classifiers, all clustering"
+	@echo "  make run NAME=x CLASSIFIER=random_forest             # all datasets, 1 classifier, all clustering"
+	@echo "  make run NAME=x CLUSTERING=kmeans                    # all datasets × all classifiers, 1 clustering"
+	@echo "  make run NAME=x DATA=cic_2018_v2 CLASSIFIER=tabular CLUSTERING=kmeans  # single"
+	@echo "  (clustering swept → artifacts land under NAME_<algo>; clustering fixed → under NAME)"

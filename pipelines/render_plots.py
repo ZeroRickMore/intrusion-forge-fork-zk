@@ -20,6 +20,7 @@ from src.core.utils import flush_timing, load_from_json, load_from_pickle, timed
 from src.domain.plot.charts import (
     bar_plot,
     beeswarm_plot,
+    cost_model_plot,
     numeric_scatter_plot,
     selective_accuracy_plot,
     strip_count_panel_plot,
@@ -165,11 +166,8 @@ def _plot_rf_evaluation(
 ) -> dict[str, Plot]:
     """Predicted-vs-observed scatter and importance bar for the RF regressor.
 
-    Each dot is a cluster. X = observed failure rate, Y = RF OOF prediction.
-    Dots colored by observed rate (viridis): warm = high rate, cool = low rate.
-    Mismatches between dot color and y-axis position expose systematic bias —
-    e.g. yellow dots (high rate) below the diagonal = RF underestimates hard
-    clusters. The dashed y=x reference line is perfect prediction.
+    Each dot is a cluster (X = observed rate, Y = OOF prediction), coloured by
+    observed rate; the dashed y=x line is perfect prediction.
     """
     predicted = classifier_results["oof_predicted_rate"]
     cids = [c for c in predicted if c in summary_df.index]
@@ -211,12 +209,9 @@ def _plot_selective_accuracy(
 ) -> dict[str, Plot]:
     """Selective-accuracy curves: reject high predicted-risk clusters first.
 
-    X = fraction of test traffic rejected (riskiest first), Y = accuracy on what
-    remains — so the curve rises as more is excluded. Three strategies: Predictor
-    rejects by predicted failure rate (label-free at inference), Oracle by the
-    true rate (best achievable ceiling), Random is the flat global-accuracy
-    baseline. The gap Predictor→Oracle is the headroom the geometry leaves on the
-    table; Predictor→Random is its operational lift.
+    X = fraction of test traffic rejected (riskiest first), Y = accuracy on the
+    remainder. Predictor rejects by predicted rate, Oracle by the true rate
+    (ceiling), Random is the flat global-accuracy baseline.
     """
     predicted = classifier_results["oof_predicted_rate"]
     cids = [c for c in predicted if c in summary_df.index]
@@ -258,10 +253,9 @@ def _plot_selective_macro_recall(
     """Class-balanced selective curve: macro-recall on the retained set as the
     riskiest clusters are rejected.
 
-    Counterpart to `_plot_selective_accuracy` for imbalanced settings: it exposes
-    whether the error-greedy rejection rule sacrifices minority classes. The Oracle
-    ranks by true error (accuracy-optimal), so here it need not dominate — a dip
-    below Random means rejecting high-error regions costs class balance.
+    Counterpart to `_plot_selective_accuracy` for imbalanced settings. The Oracle
+    ranks by true error, so here it need not dominate — a dip below Random means
+    error-greedy rejection costs class balance.
     """
     predicted = classifier_results["oof_predicted_rate"]
     cids = [c for c in predicted if c in summary_df.index]
@@ -423,8 +417,91 @@ def assemble_explain_figures(
     return figures
 
 
+def _aggregate_cost_models(root: Path) -> tuple[dict, dict, dict, float | None]:
+    """Scan `<root>/**/shared/cost_model.json`, group by distance, and aggregate
+    the per-seed fits into the dicts `cost_model_plot` expects (points, fits,
+    share) plus the production operating point `m_prod`. Degenerate fits
+    (alpha=None) are skipped."""
+    groups: dict[str, list[dict]] = {}
+    for cm_path in sorted(root.glob("**/shared/cost_model.json")):
+        cm = load_from_json(cm_path)
+        if cm.get("cost_model", {}).get("alpha") is None:
+            logger.warning("skip %s (degenerate fit, alpha=None)", cm_path)
+            continue
+        groups.setdefault(cm.get("distance"), []).append(cm)
+
+    points, fits, share = {}, {}, {}
+    for dist, cms in groups.items():
+        per_m: dict[float, list[float]] = {}
+        for cm in cms:
+            for g in cm["m_grid"]:
+                per_m.setdefault(g["m"], []).append(g["build_s"])
+        ms = sorted(per_m)
+        points[dist] = {
+            "m": np.array(ms, dtype=float),
+            "build_mean": np.array([float(np.mean(per_m[m])) for m in ms]),
+            "build_min": np.array([float(np.min(per_m[m])) for m in ms]),
+            "build_max": np.array([float(np.max(per_m[m])) for m in ms]),
+        }
+        alphas = np.array([cm["cost_model"]["alpha"] for cm in cms], dtype=float)
+        cs = np.array([cm["cost_model"]["c"] for cm in cms], dtype=float)
+        r2s = [cm["cost_model"]["r2"] for cm in cms if cm["cost_model"].get("r2") is not None]
+        fits[dist] = {
+            "alpha_mean": float(alphas.mean()),
+            "alpha_std": float(alphas.std(ddof=1)) if len(cms) > 1 else 0.0,
+            "c_mean": float(cs.mean()),
+            "r2_min": min(r2s) if r2s else None,
+        }
+        comp = np.array([cm["pipeline_cost"]["complexity_build_s_pred"] for cm in cms], dtype=float)
+        rest = np.array([cm["pipeline_cost"]["non_complexity_s"] for cm in cms], dtype=float)
+        shr = np.array([cm["pipeline_cost"]["complexity_share_pred"] for cm in cms], dtype=float)
+        share[dist] = {
+            "complexity_s": float(comp.mean()),
+            "non_complexity_s": float(rest.mean()),
+            "share": float(shr.mean()),
+        }
+
+    all_mprod = [
+        cm["pipeline_cost"]["m_prod"]
+        for cms in groups.values()
+        for cm in cms
+        if cm.get("pipeline_cost", {}).get("m_prod") is not None
+    ]
+    m_prod = float(np.mean(all_mprod)) if all_mprod else None
+    return points, fits, share, m_prod
+
+
+def _render_cost_model(root: Path, fmt: str = "pdf", out: Path | None = None) -> None:
+    """Aggregate the cost-model JSONs under `root` and write the paper figure
+    (`cost_model.<fmt>`) to `out` (defaults to `root`) via the figure subscriber."""
+    set_figure_format(fmt)
+    points, fits, share, m_prod = _aggregate_cost_models(root)
+    if not points:
+        logger.warning("No usable cost_model.json found under %s; nothing to render.", root)
+        return
+    plot = cost_model_plot(points, fits, share, m_prod=m_prod)
+    base = out or root
+    bus = LogDispatcher()
+    bus.subscribe(FilesystemFigureSubscriber(base))
+    bus.publish(LogBundle.from_dict({"figure/cost_model": plot}))
+    logger.info("Cost-model figure (%s) -> %s/cost_model.%s", ", ".join(sorted(points)), base, fmt)
+
+
 def main():
     """Main entry point for plot rendering."""
+    argv = sys.argv[1:]
+    if any(a.startswith("cost_model=") for a in argv):
+        kv = dict(
+            a.split("=", 1) for a in argv
+            if "=" in a and a.split("=", 1)[0] in ("cost_model", "format", "out")
+        )
+        _render_cost_model(
+            Path(kv["cost_model"]),
+            fmt=kv.get("format", "pdf"),
+            out=Path(kv["out"]) if kv.get("out") else None,
+        )
+        return
+
     cfg = load_config(
         config_path=Path(__file__).parent.parent / "configs",
         config_name="config",

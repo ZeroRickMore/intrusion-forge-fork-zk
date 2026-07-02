@@ -85,22 +85,11 @@ def compute_cluster_geometry(
     metric: str = "cosine",
     random_state: int = 42,
 ) -> dict[str, dict[str, float | None]]:
-    """Compute geometry measures per cluster using a single configured metric.
+    """Geometry measures per cluster under a single metric ("cosine"/"euclidean").
 
-    Inputs:
-        X_num       — (n, d_num) float array, RobustScaled numericals.
-        y_cluster   — (n,) int array, cluster labels (-1 = noise, excluded).
-        centroids   — {str(cluster_id): [float, ...]} Euclidean centroids.
-        metric      — "cosine" or "euclidean". Controls centroid type, pairwise
-                      distances, and silhouette computation.
-        random_state — seed for silhouette subsampling.
-
-    Output keys per cluster (neutral, no metric suffix):
-        max_dispersion, p95_dispersion
-        dist_to_nearest_centroid
-        p5_silhouette, frac_at_risk
-
-    Noise points (y_cluster == -1) are excluded from all computations.
+    Noise (-1) is excluded. metric controls centroid type, pairwise distances and
+    silhouette. Output keys: max_dispersion, p95_dispersion,
+    dist_to_nearest_centroid, p5_silhouette, frac_at_risk.
     """
     mask_valid = y_cluster != -1
     X_v = X_num[mask_valid]

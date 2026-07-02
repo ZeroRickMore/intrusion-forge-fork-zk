@@ -96,67 +96,48 @@ def build_knn_graph(
     metric: str = "cosine",
     batch_size: int = 1024,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build k-NN graph via batched Gower hybrid distance.
+    """Build a k-NN graph via batched Gower-hybrid distance, never materialising
+    the full n×n matrix. Returns (indices, distances), both shape (n, k).
 
-    Returns (indices, distances), both shape (n, k). Never materialises the
-    full n×n matrix.
-
-    metric="cosine" (default): Gower-cosine — cosine distance on L2-normalised
-        numerics, Hamming on categorics. When d_cat=0 reduces to pure cosine.
-    metric="euclidean": Gower-Euclidean — per-feature range-normalised Manhattan
-        on numerics, Hamming on categorics. When d_cat=0 reduces to normalised
-        Manhattan (Gower).
+    metric="cosine": cosine on L2-normalised numerics + Hamming on categorics.
+    metric="euclidean": range-normalised Manhattan on numerics + Hamming.
     """
     n, d_num = X_num.shape
     d_cat = X_cat.shape[1] if X_cat is not None else 0
     effective_k = min(k, n - 1)
 
-    indices = np.empty((n, effective_k), dtype=np.int64)
-    distances = np.empty((n, effective_k), dtype=np.float64)
-
     if metric == "cosine":
-        X_num_prep = _l2_normalize(X_num)
+        X_num_norm = _l2_normalize(X_num)
 
-        for start in tqdm(
-            range(0, n, batch_size), desc="k-NN graph", unit="batch", leave=False
-        ):
-            end = min(start + batch_size, n)
-            q_num_prep = X_num_prep[start:end]
+        def batch_dists(start: int, end: int) -> np.ndarray:
             q_cat = X_cat[start:end] if X_cat is not None else None
-
-            dists = _hybrid_row_batch(
-                X_num_prep, X_cat, q_num_prep, q_cat, d_num, d_cat
+            return _hybrid_row_batch(
+                X_num_norm, X_cat, X_num_norm[start:end], q_cat, d_num, d_cat
             )
-            batch_idx = np.arange(end - start)
-            dists[batch_idx, start + batch_idx] = np.inf
-
-            part = np.argpartition(dists, effective_k, axis=1)[:, :effective_k]
-            part_d = np.take_along_axis(dists, part, axis=1)
-            order = np.argsort(part_d, axis=1)
-            indices[start:end] = np.take_along_axis(part, order, axis=1)
-            distances[start:end] = np.take_along_axis(part_d, order, axis=1)
-
-    else:  # euclidean
+    else:
         feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
 
-        for start in tqdm(
-            range(0, n, batch_size), desc="k-NN graph", unit="batch", leave=False
-        ):
-            end = min(start + batch_size, n)
-            q_num = X_num[start:end]
+        def batch_dists(start: int, end: int) -> np.ndarray:
             q_cat = X_cat[start:end] if X_cat is not None else None
-
-            dists = _hybrid_row_batch_euclidean(
-                X_num, X_cat, q_num, q_cat, d_num, d_cat, feat_ranges
+            return _hybrid_row_batch_euclidean(
+                X_num, X_cat, X_num[start:end], q_cat, d_num, d_cat, feat_ranges
             )
-            batch_idx = np.arange(end - start)
-            dists[batch_idx, start + batch_idx] = np.inf
 
-            part = np.argpartition(dists, effective_k, axis=1)[:, :effective_k]
-            part_d = np.take_along_axis(dists, part, axis=1)
-            order = np.argsort(part_d, axis=1)
-            indices[start:end] = np.take_along_axis(part, order, axis=1)
-            distances[start:end] = np.take_along_axis(part_d, order, axis=1)
+    indices = np.empty((n, effective_k), dtype=np.int64)
+    distances = np.empty((n, effective_k), dtype=np.float64)
+    for start in tqdm(
+        range(0, n, batch_size), desc="k-NN graph", unit="batch", leave=False
+    ):
+        end = min(start + batch_size, n)
+        dists = batch_dists(start, end)
+        batch_idx = np.arange(end - start)
+        dists[batch_idx, start + batch_idx] = np.inf
+
+        part = np.argpartition(dists, effective_k, axis=1)[:, :effective_k]
+        part_d = np.take_along_axis(dists, part, axis=1)
+        order = np.argsort(part_d, axis=1)
+        indices[start:end] = np.take_along_axis(part, order, axis=1)
+        distances[start:end] = np.take_along_axis(part_d, order, axis=1)
 
     return indices, distances
 

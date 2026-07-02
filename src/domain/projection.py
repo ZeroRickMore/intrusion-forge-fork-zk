@@ -1,9 +1,7 @@
 import numpy as np
 from sklearn.manifold import TSNE
-from umap import UMAP
 
 
-_UMAP_DEFAULT_NEIGHBORS = 15   # library default, capped to n-1 on small inputs
 _TSNE_MIN_PERPLEXITY = 5       # below this t-SNE degenerates to noise
 _TSNE_MAX_PERPLEXITY = 30      # library default upper bound
 
@@ -69,17 +67,6 @@ def stratified_subsample(
             )
 
     return np.concatenate(parts) if parts else np.array([], dtype=int)
-
-
-def umap_projection(X: np.ndarray, *, n_components: int = 2) -> np.ndarray:
-    """Project data to lower dimensions with UMAP, capping n_neighbors to sample count."""
-    n_neighbors = min(_UMAP_DEFAULT_NEIGHBORS, len(X) - 1)
-    return UMAP(
-        n_components=n_components,
-        n_neighbors=n_neighbors,
-        n_jobs=-1,
-        verbose=False,
-    ).fit_transform(X)
 
 
 def tsne_projection(

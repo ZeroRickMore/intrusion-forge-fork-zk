@@ -8,14 +8,10 @@ def risk_coverage_curve(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Coverage vs accuracy as clusters are admitted in ascending `score` order.
 
-    Selection is at cluster granularity (the deployable unit: a new point is
-    routed to its nearest centroid, then to that cluster's predicted risk).
-    Both axes are weighted by `support` (test samples), so coverage is the
-    fraction of test traffic retained:
-
+    Selection is per cluster (the deployable unit). Both axes are support-weighted,
+    so coverage is the fraction of test traffic retained:
         coverage = Σ support(admitted) / Σ support
         accuracy = 1 − Σ(failure_rate·support, admitted) / Σ(support, admitted)
-
     Returns empty arrays when there is nothing to rank.
     """
     score = np.asarray(score, dtype=float)
@@ -41,12 +37,10 @@ def macro_recall_curve(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Coverage vs macro-averaged recall on the retained set (ascending `score`).
 
-    Each cluster is intra-class, so a cluster's `1 − failure_rate` is the recall
-    contribution of its class in that region. Recall is pooled per class over the
-    admitted clusters, then averaged over the classes still present — the
-    class-balanced counterpart of `risk_coverage_curve`, sensitive to whether the
-    rejection rule sacrifices minority classes. Returns empty arrays when there is
-    nothing to rank.
+    Each cluster is intra-class, so its `1 − failure_rate` is its class's recall
+    contribution. Recall is pooled per class over admitted clusters, then averaged
+    over the classes still present — the class-balanced counterpart of
+    `risk_coverage_curve`. Returns empty arrays when there is nothing to rank.
     """
     score = np.asarray(score, dtype=float)
     failure_rate = np.asarray(failure_rate, dtype=float)
@@ -117,13 +111,10 @@ def selective_prediction_metrics(
 ) -> dict:
     """Scalar risk–coverage summary (pooled accuracy) for the failure regressor.
 
-    Three strategies share the same per-cluster (actual failure rate, support):
-    the *predictor* ranks clusters by their predicted rate (what a deployment
-    would have — label-free), the *oracle* ranks by the true rate (the best
-    achievable at this granularity), and *random* selection has constant accuracy
-    equal to the global accuracy. `oracle_benefit_recovered` is the fraction of
-    the oracle's accuracy gain at `coverage_target` that the predictor captures.
-    Returns ``{}`` when there is no usable support.
+    Three rankings of the same (actual rate, support): predictor (by predicted
+    rate, label-free), oracle (by true rate, best achievable), random (flat at
+    global accuracy). `oracle_benefit_recovered` is the fraction of the oracle's
+    gain at `coverage_target` the predictor captures. Returns {} without support.
     """
     predicted = np.asarray(predicted, dtype=float)
     actual = np.asarray(actual, dtype=float)

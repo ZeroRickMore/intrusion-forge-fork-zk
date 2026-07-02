@@ -88,20 +88,11 @@ def compute_f_measures(
     *,
     metric: str = "cosine",
 ) -> dict[str, dict[str, float | None]]:
-    """Compute F1-F4 per cluster aggregated against the top-K nearest
-    adversarial clusters, returned as min/mean/max.
+    """F1-F4 per cluster vs the top-K adversarial clusters, as min/mean/max.
 
-    Inputs:
-        X_num             — (n, d_num) float array, RobustScaled numericals.
-        y_cluster         — (n,) int array, cluster labels (-1 = noise, excluded).
-        top_k_map         — {str(cluster_id): [str(adversarial_cluster_id), ...]}
-                            top-K nearest adversarial clusters per cluster.
-        metric            — "cosine": L2-normalise samples before F1-F4 (angular
-                            space, consistent with Gower-cosine k-NN);
-                            "euclidean": raw samples (Cartesian space).
-
-    Output keys per cluster (12 total):
-        f{i}_{min,mean,max}   for i in {1, 2, 3, 4}.
+    Noise (-1) is excluded. metric="cosine" L2-normalises samples first (angular
+    space, matching the Gower-cosine k-NN); "euclidean" uses raw samples.
+    Output keys: f{1..4}_{min,mean,max}.
     """
     mask_valid = y_cluster != -1
     X_raw = X_num[mask_valid]

@@ -35,7 +35,11 @@ def _n2_vec(
     """N2: mean intra/(intra+inter) NN distance ratio over cluster-c samples."""
     valid = in_c.any(axis=1) & in_j.any(axis=1)
     if not valid.any():
-        return 0.5
+        # No sample has both an intra- and an inter-class neighbour: cluster c is
+        # cleanly separated from j, the easy end of the ratio. Returning 0.0 (not
+        # the 0.5 midpoint) keeps the degenerate case consistent with N3/N4, which
+        # already return 0.0 for the same "no c∪j neighbour" condition.
+        return 0.0
     rows = np.arange(nbs.shape[0])
     intra_d = nb_dists[rows, in_c.argmax(axis=1)]
     inter_d = nb_dists[rows, in_j.argmax(axis=1)]
@@ -115,14 +119,11 @@ def compute_n_measures(
     *,
     metric: str = "cosine",
 ) -> dict[str, dict[str, float | None]]:
-    """Compute N1-N4 per cluster aggregated against the top-K nearest
-    adversarial clusters, returned as min/mean/max.
+    """N1-N4 per cluster vs the top-K adversarial clusters, as min/mean/max.
 
     Builds a global approximate MST once (for N1), then derives N2-N4 from the
-    k-NN graph using vectorised boolean masks. Noise points (excluded from
-    cluster_mask) may still appear as neighbours.
-    metric is forwarded to build_approx_mst to keep the MST consistent with the
-    k-NN graph metric.
+    k-NN graph via vectorised boolean masks. `metric` is forwarded to the MST so
+    it stays consistent with the k-NN graph.
     """
     edges_uv = build_approx_mst(knn_idx, knn_dist, X_num, X_cat, metric=metric)
 

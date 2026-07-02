@@ -26,12 +26,11 @@ def fit_hdbscan(
     random_state: int = 0,
     **fixed_params,
 ) -> np.ndarray:
-    """Fit HDBSCAN with Euclidean distance and return labels (n,).
+    """Fit HDBSCAN (Euclidean) and return labels (n,).
 
     Noise (-1) is returned as-is: residual noise points are reassigned to
-    per-class pseudo-clusters downstream and excluded from the failure meta-model.
-    Combo quality (including the coverage/noise trade-off) is judged by the
-    noise-penalised silhouette in `grid_search`, not by a hard acceptance gate.
+    per-class pseudo-clusters downstream. Combo quality is judged by the
+    noise-penalised silhouette in `grid_search`.
     """
     n = X_num.shape[0]
 
@@ -224,6 +223,4 @@ def fit_spectral(
     sub_labels = SpectralClustering(**spec_kwargs).fit_predict(sub_num)
     nn = NearestNeighbors(n_neighbors=1, algorithm="auto").fit(sub_num)
     _, idx = nn.kneighbors(X_num, n_neighbors=1, return_distance=True)
-    return sub_labels[idx.ravel()], "This is a placeholder for the Spectral model."
-
-    # TODO HOW TO RETURN THE MODEL HERE?
+    return sub_labels[idx.ravel()], 'Placeholder for model'

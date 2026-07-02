@@ -1,14 +1,9 @@
 from collections.abc import Callable
-from typing import TYPE_CHECKING
 
 import numpy as np
 
 from src.domain.clustering import ClusteringFactory
 from src.domain.clustering.base import ClusterFn, grid_search, make_hybrid_silhouette_fn
-from src.domain.clustering.ensemble import make_ensemble_cluster_fn
-
-if TYPE_CHECKING:
-    from src.domain.clustering.ensemble import ConsensusReporter
 
 Reporter = Callable[[str, dict], None]  # (algo_name, grid_search_result) -> None
 
@@ -20,35 +15,29 @@ def _split_grid_fixed(params: dict) -> tuple[dict, dict]:
     return grid, fixed
 
 
-_K_GRID_KEYS = ("n_clusters", "n_components")
-
-
-def _prune_grid_by_floor(
-    grid: dict[str, list], effective_n: int, floor: int
-) -> tuple[dict[str, list], dict[str, list]]:
-    """Drop K candidates whose average cluster size would fall below `floor`.
-
-    Only applies to cluster-count keys (`n_clusters`, `n_components`); the
-    smallest candidate is always kept so the grid never empties. Returns
-    `(pruned_grid, {key: dropped_values})`.
-    """
-    out = dict(grid)
-    dropped: dict[str, list] = {}
-    for key in _K_GRID_KEYS:
-        values = out.get(key)
-        if not values:
-            continue
-        keep = [k for k in values if effective_n / k >= floor]
-        if not keep:
-            keep = [min(values)]
-        if len(keep) < len(values):
-            out[key] = keep
-            dropped[key] = [k for k in values if k not in keep]
-    return out, dropped
-
-
 # algorithms clustering on mixed features: scored with the Gower-hybrid silhouette
 _HYBRID_SCORED_ALGOS = ("kprototypes",)
+
+# algorithms parameterised by an explicit cluster count: their `n_clusters` grid
+# is derived per class from the target average cluster size (see _n_clusters_grid)
+# instead of a static, dataset-blind list.
+_N_CLUSTERS_ALGOS = ("kmeans", "spectral", "birch", "kprototypes")
+
+
+def _n_clusters_grid(
+    n_class: int, target_size: int, k_cap: int, levels: int = 7
+) -> list[int]:
+    """Data-relative `n_clusters` candidates for a class of `n_class` points.
+
+    Spans a geometric band of average cluster sizes from `target_size` (finest)
+    upward by powers of two, so the finest candidate always targets ~target_size
+    points/cluster regardless of class size — large classes are no longer capped
+    at a static ceiling. Each candidate is clamped to [2, k_cap] (k_cap is the
+    subsample-support floor) and de-duplicated.
+    """
+    sizes = (target_size * (2**i) for i in range(levels))
+    ks = {min(k_cap, max(2, round(n_class / s))) for s in sizes}
+    return sorted(ks)
 
 
 def _make_single_cluster_fn(
@@ -57,12 +46,16 @@ def _make_single_cluster_fn(
     max_fit_samples: int,
     random_state: int,
     reporter: Reporter | None = None,
-    min_cluster_floor: int = 50,
     metric: str = "cosine",
+    max_clusters: int | None = None,
+    grid_target_cluster_size: int | None = None,
+    resolution_weight: float = 0.1,
 ) -> ClusterFn:
     """Build a ClusterFn for a single registered algorithm."""
     fit_fn = ClusteringFactory.get(name)
-    grid_raw, fixed = _split_grid_fixed(params)
+    # An algorithm with no explicit params (e.g. kmeans, whose n_clusters grid is
+    # derived per class) parses from YAML as None.
+    grid, fixed = _split_grid_fixed(params or {})
     silhouette_fn = (
         make_hybrid_silhouette_fn(metric=metric, random_state=random_state)
         if name in _HYBRID_SCORED_ALGOS
@@ -70,91 +63,72 @@ def _make_single_cluster_fn(
     )
 
     def _fn(X_num: np.ndarray, X_cat: np.ndarray | None = None) -> np.ndarray:
-        effective_n = min(X_num.shape[0], max_fit_samples)
-        grid, pruned = _prune_grid_by_floor(grid_raw, effective_n, min_cluster_floor)
         common = {
             "max_fit_samples": max_fit_samples,
             "random_state": random_state,
             **fixed,
         }
-        try:
-            if grid:
-                result, best_model = grid_search(
-                    X_num,
-                    X_cat,
-                    fit_fn,
-                    grid,
-                    min_cluster_floor=min_cluster_floor,
-                    silhouette_fn=silhouette_fn,
-                    **common,
-                )
-                if pruned:
-                    result["pruned_by_floor"] = pruned
-                if reporter is not None:
-                    reporter(name, result)
-                return fit_fn(X_num, X_cat=X_cat, **result["best"]["combo"], **common)
-            return fit_fn(X_num, X_cat=X_cat, **common)
-        except Exception as e:
-            # Graceful degradation: this algorithm abstains from the ensemble vote.
-            # Co-association (noise = no-vote, variable denominator) handles -1 cleanly,
-            # so the consensus continues with M-1 effective voters.
+        algo_grid = dict(grid)
+        if name in _N_CLUSTERS_ALGOS and grid_target_cluster_size:
+            # Per-class n_clusters band, sized so the finest candidate targets
+            # ~grid_target_cluster_size points/cluster. Capped so each cluster
+            # keeps ≥25 subsample points (a meaningful silhouette) and, when
+            # `max_clusters` is set, so the total cluster count stays within the
+            # complexity budget. Replaces any static n_clusters list from config.
+            k_cap = max(2, max_fit_samples // 25)
+            if max_clusters is not None:
+                k_cap = min(k_cap, max_clusters)
+            algo_grid["n_clusters"] = _n_clusters_grid(
+                X_num.shape[0], grid_target_cluster_size, k_cap
+            )
+        if algo_grid:
+            result, best_model = grid_search(
+                X_num,
+                X_cat,
+                fit_fn,
+                algo_grid,
+                resolution_weight=resolution_weight,
+                silhouette_fn=silhouette_fn,
+                **common,
+            )
             if reporter is not None:
-                reporter(name, {"best": None, "sweep": [], "error": f"{type(e).__name__}: {e}"})
-            return np.full(X_num.shape[0], -1, dtype=np.int64)
+                reporter(name, result)
+            return fit_fn(X_num, X_cat=X_cat, **result["best"]["combo"], **common)
+        return fit_fn(X_num, X_cat=X_cat, **common)
 
     return _fn
 
 
 def build_cluster_fn(
     algorithms: dict[str, dict],
-    consensus_threshold: float,
     max_fit_samples: int,
     random_state: int,
-    min_consensus_size: int = 1,
     reporter: Reporter | None = None,
-    consensus_reporter: "ConsensusReporter | None" = None,
-    propagation_confidence_floor: float = 0.0,
-    weight_voters: bool = True,
-    refine_geometry: bool = True,
-    refine_margin: float = 0.8,
-    min_cluster_floor: int = 50,
     metric: str = "cosine",
+    max_clusters: int | None = None,
+    grid_target_cluster_size: int | None = None,
+    resolution_weight: float = 0.1,
 ) -> ClusterFn:
-    """Build a ClusterFn from {algorithm_name: params}; ensembles when >1 key.
+    """Build a ClusterFn from a single {algorithm_name: params} entry.
 
-    `min_consensus_size` is the absolute HDBSCAN(precomputed) min_cluster_size
-    on the co-association matrix; ignored for a single algorithm. `reporter`
-    is invoked once per algorithm with its grid-search result;
-    `consensus_reporter` receives the consensus diagnostics on each ensemble
-    call. `weight_voters`, `refine_geometry` and `refine_margin` configure the
-    ensemble's voter weighting and feature-space refinement.
+    `reporter` is invoked once with the algorithm's grid-search result. Exactly
+    one algorithm is supported; degenerate K values are handled post-hoc by the
+    small-cluster absorption in the pipeline, not by a pre-grid prune.
     """
-    if not algorithms:
-        raise ValueError("build_cluster_fn: algorithms is empty")
-    fns = [
-        _make_single_cluster_fn(
-            name,
-            params,
-            max_fit_samples,
-            random_state,
-            reporter=reporter,
-            min_cluster_floor=min_cluster_floor,
-            metric=metric,
+    if len(algorithms) != 1:
+        raise ValueError(
+            f"build_cluster_fn expects exactly one algorithm, got {len(algorithms)}: "
+            f"{list(algorithms)}"
         )
-        for name, params in algorithms.items()
-    ]
-    if len(fns) == 1:
-        return fns[0]
-    return make_ensemble_cluster_fn(
-        fns,
-        threshold=consensus_threshold,
-        min_consensus_size=min_consensus_size,
-        max_fit_samples=max_fit_samples,
-        random_state=random_state,
-        consensus_reporter=consensus_reporter,
-        propagation_confidence_floor=propagation_confidence_floor,
-        weight_voters=weight_voters,
-        refine_geometry=refine_geometry,
-        refine_margin=refine_margin,
-        algorithms=algorithms,
+    (name, params), = algorithms.items()
+    return _make_single_cluster_fn(
+        name,
+        params,
+        max_fit_samples,
+        random_state,
+        reporter=reporter,
+        metric=metric,
+        max_clusters=max_clusters,
+        grid_target_cluster_size=grid_target_cluster_size,
+        resolution_weight=resolution_weight,
     )

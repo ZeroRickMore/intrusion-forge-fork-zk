@@ -56,14 +56,6 @@ def save_df(
 
 
 def load_listed_dfs(base_dir: str | Path, file_names: list[str]) -> list[pd.DataFrame]:
-    """Load a list of DataFrames from a base directory.
-
-    Args:
-        base_dir: Path to the directory containing data files.
-        file_names: List of file names (with extension).
-
-    Returns:
-        List of DataFrames in the same order as file_names.
-    """
+    """Load each `file_names` entry from `base_dir`, preserving order."""
     base_dir = Path(base_dir)
     return [load_df(base_dir / name) for name in file_names]

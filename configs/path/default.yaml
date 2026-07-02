@@ -11,10 +11,10 @@ processed_data: ${path.out_base_path}/processed_data
 shared:         ${path.out_base_path}/shared
 
 # Per-classifier (resolved against ${classifier.name})
-models:             ${path.out_base_path}/${classifier.name}/models
-outputs:            ${path.out_base_path}/${classifier.name}/outputs
-pickle:             ${path.out_base_path}/${classifier.name}/pickle
-configs:            ${path.out_base_path}/${classifier.name}/configs
-figures:            ${path.out_base_path}/${classifier.name}/figures
+models:   ${path.out_base_path}/${classifier.name}/models
+outputs:  ${path.out_base_path}/${classifier.name}/outputs
+pickle:   ${path.out_base_path}/${classifier.name}/pickle
+configs:  ${path.out_base_path}/${classifier.name}/configs
+figures:  ${path.out_base_path}/${classifier.name}/figures
 clustering_models:  ${path.out_base_path}/${classifier.name}/clustering_models
 topk_inference_out: ${path.out_base_path}/${classifier.name}/topk_inference_results_${prepare.topk_inference.split_frac}

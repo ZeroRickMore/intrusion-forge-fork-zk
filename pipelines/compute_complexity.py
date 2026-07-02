@@ -32,40 +32,20 @@ setup_logger(log_file="resources/logs.txt")
 logger = logging.getLogger(__name__)
 
 
-def _compute_class_centroids(
-    X_num: np.ndarray,
-    y_class: np.ndarray,
-    metric: str,
-    eps: float = 1e-8,
-) -> dict[str, list[float]]:
-    """Per-class centroid appropriate for the configured metric.
-
-    cosine    → spherical centroid (mean of L2-normalised samples, re-normalised).
-    euclidean → arithmetic mean.
-    """
-    result: dict[str, list[float]] = {}
-    for cid in np.unique(y_class):
-        if int(cid) == -1:
-            continue
-        X_c = X_num[y_class == int(cid)]
-        if len(X_c) == 0:
-            continue
-        if metric == "cosine":
-            norms = np.linalg.norm(X_c, axis=1, keepdims=True)
-            X_c_norm = X_c / np.maximum(norms, eps)
-            sph = X_c_norm.mean(axis=0)
-            sph_norm = np.linalg.norm(sph)
-            result[str(int(cid))] = (sph / max(sph_norm, eps)).tolist()
-        else:
-            result[str(int(cid))] = X_c.mean(axis=0).tolist()
-    return result
+def cluster_class_map(y_cluster: np.ndarray, y_class: np.ndarray) -> dict[str, int]:
+    """Full cluster_id → class_id map from unfiltered train labels (noise included)."""
+    return {
+        str(c): int(y_class[y_cluster == c][0])
+        for c in np.unique(y_cluster)
+        if c != -1
+    }
 
 
 @timed
 def compute_cluster_complexity(
     graph: ComplexityGraph,
-    centroids: dict,
     noise_cluster_ids: list[int],
+    cluster_to_class: dict[str, int],
     *,
     top_k_clusters: int,
     metric: str,
@@ -74,24 +54,19 @@ def compute_cluster_complexity(
     """Compute per-cluster complexity measures + cluster→class mapping.
 
     Output schema: {cluster_id: {<measure>: ..., "cluster_class": <int>}}.
+    Noise pseudo-clusters (excluded from the graph) carry a flag-only row;
+    their `cluster_class` comes from `cluster_to_class`, which must cover the
+    full (unfiltered) clustering — graph labels alone omit the noise ids.
     """
     logger.info("Computing cluster-level complexity measures ...")
     complexity = compute_complexity_from_graph(
         graph,
         graph.y_cluster,
-        centroids,
         top_k_clusters=top_k_clusters,
         metric=metric,
         noise_cluster_ids=set(noise_cluster_ids),
         random_state=random_state,
     )
-
-    cluster_to_class: dict[str, int] = {}
-    for cid in np.unique(graph.y_cluster):
-        if cid == -1:
-            continue
-        mask = graph.y_cluster == cid
-        cluster_to_class[str(cid)] = int(graph.y_class[mask][0])
 
     return {
         str(cid): {**measures, "cluster_class": cluster_to_class.get(str(cid))}
@@ -102,7 +77,6 @@ def compute_cluster_complexity(
 @timed
 def compute_class_complexity(
     graph: ComplexityGraph,
-    centroids: dict,
     *,
     top_k_clusters: int,
     metric: str,
@@ -118,7 +92,6 @@ def compute_class_complexity(
     return compute_complexity_from_graph(
         graph,
         graph.y_class,
-        centroids,
         top_k_clusters=top_k_clusters,
         metric=metric,
         noise_cluster_ids=None,
@@ -162,8 +135,7 @@ def main():
     val_df = load_df(str(paths.processed_data / f"val.{ext}"))
     test_df = load_df(str(paths.processed_data / f"test.{ext}"))
 
-    # Complexity is measured inductively on train only: no val/test point feeds
-    # the geometry. The failure rate (classify.py) stays on test.
+    # Complexity is measured on train only; the failure rate (classify.py) on test.
     X_num = (
         train_df[num_cols].to_numpy(dtype=np.float64)
         if num_cols
@@ -175,16 +147,33 @@ def main():
     bus = LogDispatcher()
     bus.subscribe(JSONSubscriber(paths.shared))
 
-    # Subsample + k-NN graph are partition-independent: build once, reuse for
-    # both the cluster-level and class-level passes.
+    # The k-NN graph is partition-independent: build once, reuse for the cluster-
+    # and class-level passes. Noise pseudo-clusters are excluded from the graph
+    # (they re-enter downstream only as flag-only rows).
     graph = None
+    noise_cluster_ids: list[int] = []
     if run_cluster or run_class:
+        clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
+        noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
+
         y_cluster = train_df["cluster"].to_numpy(dtype=np.int64)
+        # Full map (noise included): genuine clusters leave the graph, but their
+        # noise siblings still need a class for the flag-only rows downstream.
+        cluster_to_class = cluster_class_map(y_cluster, y_class)
+        if noise_cluster_ids:
+            genuine = ~np.isin(y_cluster, noise_cluster_ids)
+            X_num_g = X_num[genuine]
+            X_cat_g = X_cat[genuine] if X_cat is not None else None
+            y_class_g = y_class[genuine]
+            y_cluster_g = y_cluster[genuine]
+        else:
+            X_num_g, X_cat_g, y_class_g, y_cluster_g = X_num, X_cat, y_class, y_cluster
+
         graph = prepare_complexity_graph(
-            X_num,
-            X_cat,
-            y_class,
-            y_cluster,
+            X_num_g,
+            X_cat_g,
+            y_class_g,
+            y_cluster_g,
             k=cfg.complexity.k,
             max_samples=cfg.complexity.max_complexity_samples,
             min_per_cluster=cfg.complexity.min_subsample_per_cluster,
@@ -193,14 +182,10 @@ def main():
         )
 
     if run_cluster:
-        clusters_meta = load_from_json(paths.shared / "metadata/clusters_meta.json")
-        cluster_centroids = clusters_meta.get("centroids", {})
-        noise_cluster_ids = clusters_meta.get("noise_cluster_ids", [])
-
         cluster_complexity = compute_cluster_complexity(
             graph,
-            cluster_centroids,
             noise_cluster_ids,
+            cluster_to_class,
             top_k_clusters=cfg.complexity.top_k_clusters,
             metric=cfg.complexity.distance,
             random_state=cfg.seed,
@@ -209,13 +194,8 @@ def main():
         logger.info("Cluster complexity published to %s.", cluster_marker)
 
     if run_class:
-        class_centroids = _compute_class_centroids(
-            X_num, y_class, metric=cfg.complexity.distance
-        )
-
         class_complexity = compute_class_complexity(
             graph,
-            class_centroids,
             top_k_clusters=cfg.complexity.top_k_clusters,
             metric=cfg.complexity.distance,
             random_state=cfg.seed,

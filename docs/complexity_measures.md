@@ -264,14 +264,18 @@ $$T_2 = \frac{d_{\text{num}} + d_{\text{cat}}}{n_c}$$
 
 ### `t3`
 
-**PCA intrinsic dimensionality ratio** — fraction of numerical features
-needed to explain 95% of variance within the partition.
+**PCA components-to-sample ratio** — intrinsic dimensionality (PCA components
+for 95% variance) relative to the partition size, per the Lorena et al. (2019)
+canon.
+
+$$T_3 = \frac{n_{\text{PCA}_{95\%}}}{n_c}$$
 
 ### `t4`
 
-**PCA components-to-sample ratio**
+**PCA intrinsic dimensionality ratio** — fraction of numerical features
+needed to explain 95% of variance within the partition.
 
-$$T_4 = \frac{n_{\text{PCA}_{95\%}}}{n_c}$$
+$$T_4 = \frac{n_{\text{PCA}_{95\%}}}{d_{\text{num}}}$$
 
 T-family is computed on numerical features only by design (categorical
 information is captured by the N/ND families).
