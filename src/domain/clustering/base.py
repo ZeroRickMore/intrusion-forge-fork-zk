@@ -266,7 +266,10 @@ def grid_search(
                     "size_balance": 0.0,
                     "duration_s": time.perf_counter() - t0,
                     "error": True,
-                    "model" : model,
+
+                    # Save exclusively the first model, just in case all of the entries have errors, as you still need a best_model to save to you'll just use that one.
+                    # saving all of the models and then popping them before returning is an unnecessary overhead.
+                    "model" : model if not sweep else "No model saved as this entry has errors.",                     
                 }
             )
             continue
@@ -299,8 +302,9 @@ def grid_search(
             best_model = e.pop("model")
             best_entry = e
             
-    if best_entry is None:
-        best_model = sweep[0].pop("model")
+    first_entry_model = sweep[0].pop("model", "Already popped") # Remove only first in case it is the one with errors
+    if best_entry is None: # All of the entries were invalid, must use the first, which has errors
+        best_model = first_entry_model
         best_entry = sweep[0] if sweep else None
 
     if best_entry is None:
