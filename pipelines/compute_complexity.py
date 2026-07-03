@@ -218,16 +218,22 @@ def main():
 
     if run_extend:
         # The extended features for the clusters
-        cluster_features = (
-            cluster_complexity if run_cluster else load_from_json(cluster_marker)
-        )
-        # The extended features for the classes
-        class_features = (
-            class_complexity if run_class else load_from_json(class_marker)
-        )
+        if cfg.extend.use_cluster_features:
+            cluster_features = (
+                cluster_complexity if run_cluster else load_from_json(cluster_marker)
+            )
+            cluster_cols = cluster_feature_columns(cluster_features)
+        else:
+            cluster_cols = []
 
-        cluster_cols = cluster_feature_columns(cluster_features)
-        class_cols = cluster_feature_columns(class_features)
+        # The extended features for the classes
+        if cfg.extend.use_class_features:
+            class_features = (
+                class_complexity if run_class else load_from_json(class_marker)
+            )
+            class_cols = cluster_feature_columns(class_features)
+        else:
+            class_cols = []
 
         complexity_cols = cluster_cols + class_cols
         
@@ -257,8 +263,15 @@ def main():
                         candidate_ids=_genuine_ids,
                     )
                     logger.info("Label-free cluster assignment done for split '%s'", name)
-                merged = attach_cluster_features(split_df, cluster_features) # Attach only the cluster features
-                merged = attach_class_features(df=merged, class_features=class_features, class_col=f"encoded_{cfg.data.label_col}") # Attach only the class features
+
+                if cfg.extend.use_cluster_features:
+                    # Attach the cluster features
+                    merged = attach_cluster_features(split_df, cluster_features)
+
+                if cfg.extend.use_class_features:
+                     # Attach the class features
+                    merged = attach_class_features(df=merged, class_features=class_features, class_col=f"encoded_{cfg.data.label_col}")
+                
                 before = len(merged)
                 merged = merged.dropna(subset=complexity_cols, how="all")
                 if before - len(merged):
