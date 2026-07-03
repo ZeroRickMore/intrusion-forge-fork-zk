@@ -101,7 +101,7 @@ def find_top_h_nearest_clusters(
     class_label_int,
     class_to_clusters,
     cluster_centroids,
-    distance_metric="euclidean",
+    distance_metric,
 ):
 
     centroids_to_check = {
@@ -110,15 +110,12 @@ def find_top_h_nearest_clusters(
         if cluster_id in class_to_clusters[str(class_label_int)]
     } # Dictionary {"278" : [feat1, feat2, ...]} with all the clusters of the specified class
 
-
     cluster_ids = np.array(list(centroids_to_check.keys())) # the cluster class ids
 
     centroid_matrix = np.array(
         [centroids_to_check[cid] for cid in cluster_ids],
         dtype=float
     ) # array of the sole centroid features
-
-
 
     # Find distances depending on metric
     if distance_metric == "cosine":
@@ -177,7 +174,7 @@ def run_topk_predict_on_inference_input_df(
     weak_proba = weak_clf.predict_proba(inference_df) # Find weak proba of all samples
     top_k_classes = np.argsort(weak_proba, axis=1)[:, -k:] # Find the top-k classes of each sample's weak_proba
 
-    print(f"- Finding class_to_indices for iteration...")
+    print(f"\n- Finding class_to_indices for iteration...")
     class_to_indices = defaultdict(list) # dict that maps, for each class (numeric class, not label), the index of the samples that are candidate for that class
     for i in range(inference_df.shape[0]):
         for cls in top_k_classes[i]:
@@ -189,6 +186,7 @@ def run_topk_predict_on_inference_input_df(
 
     what_is_happening = {} # TODO REMOVE
 
+    print(f"\n- Iterating over the classes...")
     # cls is the class being tested as extension, idxs are the global indexes of the samples that have been candidated to class "cls" by the weak classifier
     for cls, idxs_of_df in tqdm(class_to_indices.items(), total=len(class_to_indices), desc="Classes", position=0):
         X_of_class = inference_df.iloc[idxs_of_df].copy() # Retrieve the samples to be tested for the cls extension
@@ -218,8 +216,8 @@ def run_topk_predict_on_inference_input_df(
         # ---------------------------
 
         # Indices of the h closest clusters for each sample
-        print(f"Finding top h nearest clusters for points in class \"{label_mapping[str(cls)]}\"...")
-        top_h_clusters_classes, _ = find_top_h_nearest_clusters(h=h,
+        # print(f"\nFinding top h nearest clusters for points in class \"{label_mapping[str(cls)]}\"...")
+        top_h_clusters_classes, distances = find_top_h_nearest_clusters(h=h,
                                                              distance_metric=distance_metric,
                                                              df_of_class=X_of_class, 
                                                              num_cols=num_cols,
@@ -268,6 +266,8 @@ def run_topk_predict_on_inference_input_df(
                         # Update global dataframe infos of the sample
                         best_predictions[sample_index_global] = label_mapping[str(per_class_and_cluster_class_preds[sample_index_in_the_cluster_class_of_class])]
                         best_confidences[sample_index_global] = per_class_and_cluster_class_confs[sample_index_in_the_cluster_class_of_class]
+                    else:
+                        pass # The proposed "best" class did not belong to the weak classifier, thus it's not a good candidate
 
     print(f"- Column meanings:\n{[label_mapping[str(_)] for _ in ext_clf.classes_]}\n")
     print(f"- what_is_happening:")
