@@ -7,3 +7,4 @@ resolution_weight: 0.5             # resolution tilt strength: prefer finer part
 algorithms:
   birch:                             # n_clusters derived per class
     branching_factor: 50
+only_numerical_columns: true

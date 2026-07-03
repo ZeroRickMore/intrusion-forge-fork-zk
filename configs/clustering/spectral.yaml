@@ -8,3 +8,4 @@ algorithms:
   spectral:                          # graph-based (k-NN), captures non-convex structure. n_clusters derived per class (eigsolve cost grows with K and fit size — keep max_fit_samples modest)
     affinity: nearest_neighbors
     n_neighbors: 10
+only_numerical_columns: true

@@ -6,3 +6,4 @@ grid_target_cluster_size: 200      # finest n_clusters candidate targets ~this a
 resolution_weight: 0.5             # resolution tilt strength: prefer finer partitions unless a coarser one's silhouette is >this better. Higher → more clusters (more downstream regression support)
 algorithms:
   kmeans:                            # centroid-based (n_clusters derived per class)
+only_numerical_columns: true

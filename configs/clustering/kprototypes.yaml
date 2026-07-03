@@ -7,3 +7,4 @@ resolution_weight: 0.5             # resolution tilt strength: prefer finer part
 algorithms:
   kprototypes:                       # mixed-type: k-means on numerics + matching dissimilarity on categoricals. n_clusters derived per class
     gamma: [0.25, 0.5, 1.0, 2.0]     # weight of the categorical contribution (kmodes default ≈ 0.5 on scaled data)
+only_numerical_columns: false
