@@ -17,6 +17,7 @@ from src.domain.analysis.complexity.shared import (
     l2_normalize
 )
 
+NO_BENIGN_RUN = False
 GLOBAL_STATS = defaultdict(lambda : defaultdict(lambda : defaultdict()))
 
 def extend_features_batch(df, 
@@ -227,7 +228,8 @@ def run_topk_predict_on_inference_input_df(
                 # Add new sample.
                 # Only if there aren't way too many samples already... Also, make this a little random, so that you get some representation of all the classes in a way
                 # Maximum amount of samples is 50, else the output file would be huge
-                elif (random.randrange(0,100) > 90) and (len(GLOBAL_STATS['Top k Inference Execution']['Per Sample']) < 50): # Remove true for control over the sample insertion
+                # if NO_BENIGN_RUN, it means the dataset is a lot smaller, which allows to filter the samples afterwards, and print the wrongly labeled ones as output in json
+                elif NO_BENIGN_RUN or (random.randrange(0,100) > 90) and (len(GLOBAL_STATS['Top k Inference Execution']['Per Sample']) < 50): # Remove true for control over the sample insertion
                     GLOBAL_STATS['Top k Inference Execution']['Per Sample'][sample_key] = {} # Init sample  
                     GLOBAL_STATS['Top k Inference Execution']['Per Sample'][sample_key]['Weak Proba (Value, Class Label)'] = [(weak_proba[sample_index_in_the_cluster_class_of_class].tolist()[i], class_labels[i]) for i in range(len(class_labels))]
                     GLOBAL_STATS['Top k Inference Execution']['Per Sample'][sample_key]['Top k Classes (Class Id, Class Label)'] = [(str(class_id), label_mapping[str(class_id)]) for class_id in top_k_classes[sample_index_in_the_cluster_class_of_class].tolist()]
@@ -326,10 +328,8 @@ def load_inference_input_df_and_strip_labels(cfg):
 
     return inference_df, labels, encoded_labels
 
-def print_diagnostics(inference_df_full, confidences, predictions, labels):
+def print_diagnostics(n_samples, confidences, predictions, labels):
     print("\n=== Inference Diagnostics ===")
-
-    n_samples = len(inference_df_full)
 
     print(f"Samples processed: {n_samples:,}")
 
@@ -437,9 +437,12 @@ def main():
     # GLOBAL_STATS['config']['classes_infos']['cluster_centroids'] = cluster_centroids
 
     # Filter out Benign for more precise understanding on how the samples failed
-    mask = labels != str(cfg.data.benign_tag)
-    labels = labels[mask]
-    inference_df = inference_df[mask]
+    if NO_BENIGN_RUN:
+        mask = labels != str(cfg.data.benign_tag)
+        labels = labels[mask]
+        inference_df = inference_df[mask]
+
+    n_samples = len(inference_df)
 
     # Find predictions and confidences, and append to df as columns
     predictions, confidences = run_topk_predict_on_inference_input_df(
@@ -478,12 +481,21 @@ def main():
         # Quick reordering of keys for better visualization
         GLOBAL_STATS['Top k Inference Execution']['Per Sample'][global_idx] = {
             'True Class (Class Id, Class Label)' : (reversed_label_mapping[labels.iloc[int(global_idx)]], labels.iloc[int(global_idx)]),
-            'Best Prediction (Class Id, Class Label)' : (reversed_label_mapping[predictions[int(global_idx)]], predictions[int(global_idx)]),
+            'Best Prediction (Class Id, Class Label)' : (reversed_label_mapping.get(predictions[int(global_idx)], 'No ID'), predictions[int(global_idx)]),
             'Best Confidence (Value)' : predictions[int(global_idx)],
             'Weak Proba (Value, Class Label)' : GLOBAL_STATS['Top k Inference Execution']['Per Sample'][global_idx]['Weak Proba (Value, Class Label)'],
             'Top k Classes (Class Id, Class Label)' : GLOBAL_STATS['Top k Inference Execution']['Per Sample'][global_idx]['Top k Classes (Class Id, Class Label)'],
             'Per Class' : GLOBAL_STATS['Top k Inference Execution']['Per Sample'][global_idx]['Per Class'],
         }
+
+    # Filter to keep only 50 samples which are plenty enough
+    if len(GLOBAL_STATS['Top k Inference Execution']['Per Sample'].keys()) > 50:
+        while True:
+            GLOBAL_STATS['Top k Inference Execution']['Per Sample'].pop(list(GLOBAL_STATS['Top k Inference Execution']['Per Sample'].keys())[0])
+            l = len(GLOBAL_STATS['Top k Inference Execution']['Per Sample'].keys())
+            if l == 50:
+                break
+            print(f"{l} > 50")
     
     global_stats_output_path = Path(cfg.path.topk_inference_out) / 'global_stats.json'
     print(f"- Saving GLOBAL_STATS to {global_stats_output_path}")
@@ -493,7 +505,7 @@ def main():
     print(f"- Saving results df to {output_path}")
     save_df(df=inference_df_full, file_path=output_path)
 
-    print_diagnostics(inference_df_full=inference_df_full, confidences=confidences, predictions=predictions, labels=labels)
+    print_diagnostics(n_samples=n_samples, confidences=confidences, predictions=predictions, labels=labels)
 
     print("- Topk-inference completed.")
 
