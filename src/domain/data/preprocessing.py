@@ -375,6 +375,37 @@ def attach_cluster_features(
     df = df.drop(columns=[c for c in columns if c in df.columns])
     return df.merge(feature_df, left_on=cluster_col, right_index=True, how="left")
 
+def attach_class_features(
+    df: pd.DataFrame,
+    class_features: dict[str, dict[str, float | None]],
+    *,
+    class_col: str,
+) -> pd.DataFrame:
+    """Left-join per-class complexity rows onto `df` by `class_col`.
+
+    Existing target columns are dropped first (idempotent overwrite).
+    Unmatched rows get NaN.
+    """
+    columns = cluster_feature_columns(class_features)
+
+    feature_df = (
+        pd.DataFrame.from_dict(class_features, orient="index")
+        .reindex(columns=columns)
+    )
+
+    feature_df.index = feature_df.index.astype(df[class_col].dtype)
+
+    df = df.drop(
+        columns=[c for c in columns if c in df.columns],
+        errors="ignore",
+    )
+
+    return df.merge(
+        feature_df,
+        left_on=class_col,
+        right_index=True,
+        how="left",
+    )
 
 def scale_columns_on_train(
     splits: dict[str, pd.DataFrame],
