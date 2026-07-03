@@ -132,10 +132,6 @@ failure-classify: complexity
 
 ## topk_inference
 topk-inference:
-	PYTHONPATH=. $(PYTHON) pipelines/topk_inference_vectorial.py $(HYDRA)
-
-## topk_inference
-topk-inference-single-sample:
 	PYTHONPATH=. $(PYTHON) pipelines/topk_inference.py $(HYDRA)
 
 ## render:             Step 4 — render plots from analysis artifacts          (DATA, NAME, SEED, CLASSIFIER)
