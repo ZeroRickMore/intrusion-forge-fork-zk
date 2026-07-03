@@ -29,9 +29,9 @@ grid_search:
 prepare:
   force: false                       # re-run preprocessing+clustering even if shared outputs exist
   topk_inference:                    # topk_inference settings for data preparation. On the first run, everything has to be true.
-    save_clustering_models: True     # saves the best clustering model(s) into ${path.out_base_path}/topk_inference
-    split_dataset: True              # Splits the dataset into 2 parts, one used for the usual prepare_data pipeline, the other will stay untouched and will be later used by topk_inference
-    split_frac: 0.7                  # The fraction that will be used by the usual prepare_data pipeline. The remaining will be used as topk_inference input
+    save_clustering_models: False     # saves the best clustering model(s) into ${path.out_base_path}/topk_inference
+    split_dataset: False              # Splits the dataset into 2 parts, one used for the usual prepare_data pipeline, the other will stay untouched and will be later used by topk_inference
+    split_frac: 1                  # The fraction that will be used by the usual prepare_data pipeline. The remaining will be used as topk_inference input
 
 complexity:
   distance: ${distance}              # inherited from the top-level key — must match the clustering metric
@@ -66,9 +66,11 @@ extend:
   background_summary_k: 25           # k-means centroids used as KernelExplainer background
   nsamples: 200                      # coalition samples per explained instance (KernelExplainer)
   max_display: 20                    # top features shown in the beeswarm
+  use_class_features: true           # computes complexity using class features (not exclusive)
+  use_cluster_features: true         # computes complexity using cluster features (not exclusive)
 
 topk_inference:
-  k: 5 # The top-k parameter to use inside of topk_inference.py
+  k: 3 # The top-k parameter to use inside of topk_inference.py
   h: 3
 
 hydra:
