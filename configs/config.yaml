@@ -69,6 +69,7 @@ extend:
 
 topk_inference:
   k: 5 # The top-k parameter to use inside of topk_inference.py
+  h: 3
 
 hydra:
   run:
