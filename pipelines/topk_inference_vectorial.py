@@ -18,58 +18,6 @@ from src.domain.analysis.complexity.shared import (
     hybrid_row_batch_euclidean
 )
 
-# ROW PER ROW VERSION. WAY TOO SLOW, BUT USED AS A STARTING POINT
-def top_k_predict(
-    x,
-    weak_clf,
-    ext_clf,
-    cluster_models,
-    label_mapping,
-    complexity_features_per_class,
-    k,
-):
-    """
-    Predict using top-k candidate classes from the weak classifier
-    and select the prediction with highest confidence from the
-    complexity-extended classifier.
-    """
-    def get_extended_sample(sample, complexity_extension):
-        new_sample = sample.copy()
-        if not isinstance(complexity_extension, dict):
-            raise TypeError(f"complexity_extension should be a dict, exactly what's inside of class_complexity.json per class.")
-        
-        for label in complexity_extension:
-            new_sample[label] = complexity_extension[label]
-
-        return new_sample
-
-    proba_weak = weak_clf.predict_proba(x)[0]
-    top_k_class_numerics = np.argsort(proba_weak)[-k:]
-
-    best_confidence = -np.inf
-    best_prediction = None
-
-    for class_numeric in top_k_class_numerics:
-        class_label = label_mapping[str(class_numeric)]
-        # Lazy-load model
-        if isinstance(cluster_models[class_label], str):
-            cluster_models[class_label] = load_from_joblib(cluster_models[class_label])
-
-        # First extend it, then align it with the order of the features as they appear in the ext_clf
-        x_ext = get_extended_sample(sample=x, complexity_extension=complexity_features_per_class[str(class_numeric)])[ext_clf.named_steps["clf"].feature_names_in_]
-
-        proba_ext = ext_clf.predict_proba(x_ext)
-
-        conf = np.max(proba_ext)
-        pred = np.argmax(proba_ext)
-
-        if conf > best_confidence:
-            best_confidence = conf
-            best_prediction = pred
-
-
-    return best_prediction, best_confidence
-
 def extend_features_batch(df, complexity_extension_class : dict, complexity_extension_cluster_class : dict, column_ordering):
     """
     - df : the subset of samples that require the extension
@@ -77,19 +25,19 @@ def extend_features_batch(df, complexity_extension_class : dict, complexity_exte
     - complexity_extension_cluster_class: dict like {feature_name: value}, the extension columns with values for the cluster class of the class (subclass), equal for each sample
     - column_ordering: the list of the columns that appear in the classifier, which will be followed during the extension
     """
-    # TODO qui devo fare la cosa che ci appiccico la roba specifica del cluster predictato.
-    # quindi qui devo usare il modello di clustering per la predizione da cluster_models
-
-    # occhio che quasi sicuramente cluster_model ti dice la sottoclasse di appartenenza, che se sei fortunato è una di quelle che sta dentro complexity.json
-    # quindi la roba per l'estensione la prendi da li
     df_ext = df.copy()
 
     for column_name, column_values in complexity_extension_class.items():
-        df_ext[f"{column_name}"] = column_values
+        df_ext[column_name] = column_values
 
-    # TODO UNCOMMENT THIS AFTER INCLUDING CLUSTER EXTENSION IN TRANINING
-    # for column_name, column_values in complexity_extension_cluster_class.items():
-    #     df_ext[f"cluster_class_{column_name}"] = column_values
+    for column_name, column_values in complexity_extension_cluster_class.items():
+        df_ext[column_name] = column_values
+
+    # Handle noise clusters missing a lot of columns, that default to 0.0
+    if complexity_extension_cluster_class['cluster_is_noise_cluster'] == 1.0:
+        for column_name in column_ordering:
+            if column_name.startswith("cluster_"):
+                df_ext[column_name] = 0.0
 
     return df_ext[column_ordering]
 
@@ -246,7 +194,7 @@ def run_topk_predict_on_inference_input_df(
                 complexity_extension_cluster_class=complexity_features_per_cluster_class[str(cluster_class_in_cls)],
                 column_ordering=ext_clf.named_steps["clf"].feature_names_in_, # Obtain the ordering of columns to follow for the extension
             )
- 
+
             per_class_and_cluster_class_ext_proba = ext_clf.predict_proba(X_ext)
 
             what_is_happening[f"{label_mapping[str(cls)]} of cluster {cluster_class_in_cls}"] = [str(_) for _ in per_class_and_cluster_class_ext_proba[:5]] # TODO REMOVE
@@ -298,7 +246,8 @@ def load_inference_input_df_and_strip_labels(cfg):
                           "\tbut make sure this is intended before doing so, as running inference on a model trained\n"
                           "\ton a different split_frac may result in data leak and false predictions.")
 
-    inference_input_path = (Path(cfg.path.dataset_split) / "inference_input.pkl")
+    # inference_input_path = (Path(cfg.path.dataset_split) / "inference_input.pkl")
+    inference_input_path = (Path(cfg.path.dataset_split) / "trained_on.pkl")
 
     print(f"- Loading df from inference input path:\n\t{inference_input_path}")
 
