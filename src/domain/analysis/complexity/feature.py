@@ -1,7 +1,7 @@
 import numpy as np
 from tqdm import tqdm
 
-from src.domain.analysis.complexity.shared import aggregate_min_mean_max, make_null_row, _l2_normalize
+from src.domain.analysis.complexity.shared import aggregate_min_mean_max, make_null_row, l2_normalize
 from src.core.utils import timed
 
 
@@ -96,7 +96,7 @@ def compute_f_measures(
     """
     mask_valid = y_cluster != -1
     X_raw = X_num[mask_valid]
-    X_v = _l2_normalize(X_raw) if metric == "cosine" else X_raw
+    X_v = l2_normalize(X_raw) if metric == "cosine" else X_raw
     yk_v = y_cluster[mask_valid]
 
     cluster_block: dict[str, np.ndarray] = {

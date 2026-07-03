@@ -37,7 +37,7 @@ from src.domain.data.preprocessing import (
     rare_category_filter,
     representative_split
 )
-from src.domain.analysis.complexity.shared import _l2_normalize
+from src.domain.analysis.complexity.shared import l2_normalize
 from src.domain.clustering import build_cluster_fn
 from src.domain.clustering.base import (
     assign_clusters_within_class,
@@ -110,7 +110,7 @@ def _cluster_per_class(
         if not mask.any():
             continue
         X_num_cls = X_num[mask]
-        X_num_cls = _l2_normalize(X_num_cls) if metric == "cosine" else X_num_cls
+        X_num_cls = l2_normalize(X_num_cls) if metric == "cosine" else X_num_cls
         X_cat_cls = X_cat[mask] if X_cat is not None else None
 
         algo_reports: dict[str, dict] = {}
@@ -330,6 +330,7 @@ def _cluster_splits(
         clustering_models_base_path = cfg.path.clustering_models,
         clustering_algorithm_name=str(cfg.clustering.name)
     )
+
     dispatcher.publish(
         LogBundle.from_dict({"json/clustering_report": clustering_report})
     )

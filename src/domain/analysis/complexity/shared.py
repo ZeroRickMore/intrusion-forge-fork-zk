@@ -4,8 +4,8 @@ import scipy.sparse.csgraph
 from scipy.spatial.distance import cdist
 from tqdm import tqdm
 
+# from src.core.utils import timedhybrid_row_batch
 from src.core.utils import timed
-
 
 def aggregate_min_mean_max(
     vals: list[float],
@@ -27,13 +27,13 @@ def make_null_row(metric_keys: tuple[str, ...]) -> dict[str, float | None]:
     }
 
 
-def _l2_normalize(X_num: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+def l2_normalize(X_num: np.ndarray, eps: float = 1e-8) -> np.ndarray:
     """Row-wise L2-normalize so that Euclidean on unit vectors maps to cosine."""
     norms = np.linalg.norm(X_num, axis=1, keepdims=True)
     return X_num / np.maximum(norms, eps)
 
 
-def _hybrid_row_batch(
+def hybrid_row_batch(
     X_num_norm: np.ndarray,
     X_cat: np.ndarray | None,
     query_num_norm: np.ndarray,
@@ -59,7 +59,7 @@ def _hybrid_row_batch(
     return dist / (d_num + d_cat)
 
 
-def _hybrid_row_batch_euclidean(
+def hybrid_row_batch_euclidean(
     X_num: np.ndarray,
     X_cat: np.ndarray | None,
     query_num: np.ndarray,
@@ -107,11 +107,11 @@ def build_knn_graph(
     effective_k = min(k, n - 1)
 
     if metric == "cosine":
-        X_num_norm = _l2_normalize(X_num)
+        X_num_norm = l2_normalize(X_num)
 
         def batch_dists(start: int, end: int) -> np.ndarray:
             q_cat = X_cat[start:end] if X_cat is not None else None
-            return _hybrid_row_batch(
+            return hybrid_row_batch(
                 X_num_norm, X_cat, X_num_norm[start:end], q_cat, d_num, d_cat
             )
     else:
@@ -119,7 +119,7 @@ def build_knn_graph(
 
         def batch_dists(start: int, end: int) -> np.ndarray:
             q_cat = X_cat[start:end] if X_cat is not None else None
-            return _hybrid_row_batch_euclidean(
+            return hybrid_row_batch_euclidean(
                 X_num, X_cat, X_num[start:end], q_cat, d_num, d_cat, feat_ranges
             )
 
@@ -195,10 +195,10 @@ def _bridge_disconnected(
     ref = int(np.where(comp_labels == 0)[0][0])
 
     if metric == "cosine":
-        X_num_norm = _l2_normalize(X_num)
+        X_num_norm = l2_normalize(X_num)
         q_num_prep = X_num_norm[ref : ref + 1]
         q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
-        dists_row = _hybrid_row_batch(
+        dists_row = hybrid_row_batch(
             X_num_norm, X_cat, q_num_prep, q_cat, d_num, d_cat
         )[0]
     else:
@@ -206,7 +206,7 @@ def _bridge_disconnected(
             feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
         q_num = X_num[ref : ref + 1]
         q_cat = X_cat[ref : ref + 1] if X_cat is not None else None
-        dists_row = _hybrid_row_batch_euclidean(
+        dists_row = hybrid_row_batch_euclidean(
             X_num, X_cat, q_num, q_cat, d_num, d_cat, feat_ranges
         )[0]
 
