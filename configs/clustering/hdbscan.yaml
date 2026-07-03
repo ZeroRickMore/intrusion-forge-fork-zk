@@ -12,3 +12,4 @@ algorithms:
     # No acceptance gate: combos are ranked by silhouette − noise_penalty·noise_ratio
     # + resolution tilt in grid_search. Noise points → per-class pseudo-clusters,
     # excluded from the complexity graph and the failure meta-model downstream.
+only_numerical_columns: true
