@@ -24,6 +24,7 @@ from src.domain.analysis.complexity import (
 from src.domain.clustering.base import assign_nearest_centroid
 from src.domain.data.preprocessing import (
     attach_cluster_features,
+    attach_class_features,
     cluster_feature_columns,
     scale_columns_on_train,
 )
@@ -69,7 +70,10 @@ def compute_cluster_complexity(
     )
 
     return {
-        str(cid): {**measures, "cluster_class": cluster_to_class.get(str(cid))}
+        str(cid): {
+            **{f"cluster_{k}": v for k, v in measures.items()},
+            "cluster_class": cluster_to_class.get(str(cid)),
+        }
         for cid, measures in complexity.items()
     }
 
@@ -89,7 +93,8 @@ def compute_class_complexity(
     identical to the cluster-level one (neutral keys, no `cluster_class`).
     """
     logger.info("Computing class-level complexity measures ...")
-    return compute_complexity_from_graph(
+
+    complexity = compute_complexity_from_graph(
         graph,
         graph.y_class,
         top_k_clusters=top_k_clusters,
@@ -97,6 +102,14 @@ def compute_class_complexity(
         noise_cluster_ids=None,
         random_state=random_state,
     )
+
+    return {
+        str(cid): {
+            f"class_{k}": v
+            for k, v in measures.items()
+        }
+        for cid, measures in complexity.items()
+    }
 
 
 def main():
@@ -204,10 +217,20 @@ def main():
         logger.info("Class complexity published to %s.", class_marker)
 
     if run_extend:
+        # The extended features for the clusters
         cluster_features = (
             cluster_complexity if run_cluster else load_from_json(cluster_marker)
         )
-        complexity_cols = cluster_feature_columns(cluster_features)
+        # The extended features for the classes
+        class_features = (
+            class_complexity if run_class else load_from_json(class_marker)
+        )
+
+        cluster_cols = cluster_feature_columns(cluster_features)
+        class_cols = cluster_feature_columns(class_features)
+
+        complexity_cols = cluster_cols + class_cols
+        
         if not complexity_cols:
             logger.warning("No complexity columns to attach; skipping dataset extension.")
         else:
@@ -234,7 +257,8 @@ def main():
                         candidate_ids=_genuine_ids,
                     )
                     logger.info("Label-free cluster assignment done for split '%s'", name)
-                merged = attach_cluster_features(split_df, cluster_features)
+                merged = attach_cluster_features(split_df, cluster_features) # Attach only the cluster features
+                merged = attach_class_features(df=merged, class_features=class_features, class_col=f"encoded_{cfg.data.label_col}") # Attach only the class features
                 before = len(merged)
                 merged = merged.dropna(subset=complexity_cols, how="all")
                 if before - len(merged):
