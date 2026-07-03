@@ -17,7 +17,9 @@ from src.domain.analysis.complexity.shared import (
     l2_normalize
 )
 
+USE_TEST_DF = True # Recommended True
 NO_BENIGN_RUN = False
+USE_ALL_CLUSTER_CENTROIDS_FOR_H = True # Does not limit to the centroids of the current cluster class to find the top h closest clusters
 GLOBAL_STATS = defaultdict(lambda : defaultdict(lambda : defaultdict()))
 
 def extend_features_batch(df, 
@@ -60,12 +62,12 @@ def find_top_h_nearest_clusters(
     cluster_centroids,
     distance_metric,
 ):
-
+     # Dictionary {"278" : [feat1, feat2, ...]} with all the clusters of the specified class (or global)
     centroids_to_check = {
         cluster_id: centroid
         for cluster_id, centroid in cluster_centroids.items()
         if cluster_id in class_to_clusters[str(class_label_int)]
-    } # Dictionary {"278" : [feat1, feat2, ...]} with all the clusters of the specified class
+    } if not USE_ALL_CLUSTER_CENTROIDS_FOR_H else cluster_centroids
 
     cluster_ids = np.array(list(centroids_to_check.keys())) # the cluster class ids
 
@@ -128,7 +130,7 @@ def run_topk_predict_on_inference_input_df(
     use_cluster_for_extension
 ):
     global GLOBAL_STATS
-    print(f"- Running topk-inference on {inference_df.shape[0]:,} samples with k={k}.")
+    print(f"- Running topk-inference on {inference_df.shape[0]:,} samples with k={k}, h={h}, and distance metric {distance_metric}.")
     
     weak_proba = weak_clf.predict_proba(inference_df) # Find weak proba of all samples
     top_k_classes = np.argsort(weak_proba, axis=1)[:, -k:] # Find the top-k classes of each sample's weak_proba
@@ -229,7 +231,7 @@ def run_topk_predict_on_inference_input_df(
                 # Only if there aren't way too many samples already... Also, make this a little random, so that you get some representation of all the classes in a way
                 # Maximum amount of samples is 50, else the output file would be huge
                 # if NO_BENIGN_RUN, it means the dataset is a lot smaller, which allows to filter the samples afterwards, and print the wrongly labeled ones as output in json
-                elif NO_BENIGN_RUN or (random.randrange(0,100) > 90) and (len(GLOBAL_STATS['Top k Inference Execution']['Per Sample']) < 50): # Remove true for control over the sample insertion
+                elif NO_BENIGN_RUN or ((random.randrange(0,100) > 90) and (len(GLOBAL_STATS['Top k Inference Execution']['Per Sample']) < 50)): # Remove true for control over the sample insertion
                     GLOBAL_STATS['Top k Inference Execution']['Per Sample'][sample_key] = {} # Init sample  
                     GLOBAL_STATS['Top k Inference Execution']['Per Sample'][sample_key]['Weak Proba (Value, Class Label)'] = [(weak_proba[sample_index_in_the_cluster_class_of_class].tolist()[i], class_labels[i]) for i in range(len(class_labels))]
                     GLOBAL_STATS['Top k Inference Execution']['Per Sample'][sample_key]['Top k Classes (Class Id, Class Label)'] = [(str(class_id), label_mapping[str(class_id)]) for class_id in top_k_classes[sample_index_in_the_cluster_class_of_class].tolist()]
@@ -295,8 +297,11 @@ def load_inference_input_df_and_strip_labels(cfg):
                           "\tbut make sure this is intended before doing so, as running inference on a model trained\n"
                           "\ton a different split_frac may result in data leak and false predictions.")
 
-    inference_input_path = Path(cfg.path.dataset_split) / "inference_input.pkl"
+    if not USE_TEST_DF:
+        inference_input_path = Path(cfg.path.dataset_split) / "inference_input.pkl"
     # inference_input_path = Path(cfg.path.dataset_split) / "trained_on.pkl"
+    else:
+        inference_input_path = Path(cfg.path.processed_data) / 'test.parquet'
 
     GLOBAL_STATS['Config']['Paths']['Inference Dataframe'] = str(inference_input_path)
 
@@ -308,8 +313,7 @@ def load_inference_input_df_and_strip_labels(cfg):
             f"\t- You should run prepare_data with \"prepare.topk_inference.split_dataset : True\"."
         )
 
-    #inference_df = load_df(file_path=inference_input_path)
-    inference_df = load_df(Path(cfg.path.processed_data) / 'test.parquet')
+    inference_df = load_df(file_path=inference_input_path)
 
     print(f"- Loaded inference dataset with shape {inference_df.shape}")
 
@@ -438,6 +442,7 @@ def main():
 
     # Filter out Benign for more precise understanding on how the samples failed
     if NO_BENIGN_RUN:
+        print("- Removing Benign labels to allow for badly classified samples to be seen in-depth as output.")
         mask = labels != str(cfg.data.benign_tag)
         labels = labels[mask]
         inference_df = inference_df[mask]
@@ -474,9 +479,9 @@ def main():
                     position=0):
         
         # Keep exclusively the ones that failed
-        if str(predictions[int(global_idx)]) == str(labels.iloc[int(global_idx)]):
-            GLOBAL_STATS['Top k Inference Execution']['Per Sample'].pop(global_idx)
-            continue
+        # if not NO_BENIGN_RUN and str(predictions[int(global_idx)]) == str(labels.iloc[int(global_idx)]):
+        #     GLOBAL_STATS['Top k Inference Execution']['Per Sample'].pop(global_idx)
+        #     continue
 
         # Quick reordering of keys for better visualization
         GLOBAL_STATS['Top k Inference Execution']['Per Sample'][global_idx] = {
