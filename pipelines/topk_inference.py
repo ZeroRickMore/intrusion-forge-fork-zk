@@ -134,15 +134,16 @@ def run_topk_predict_on_inference_input_df(
  
     print(f"\n- Finding class_to_indices for iteration...")
     class_to_indices = defaultdict(list) # dict that maps, for each class (numeric class, not label), the index of the samples that are candidate for that class
-    for i in range(inference_df.shape[0]):
-        for cls in top_k_classes[i]:
-            class_to_indices[cls].append(i)
+    for i in range(inference_df.shape[0]): # for each row of index i
+        for cls in top_k_classes[i]: # for each top k class of the i-th row
+            class_to_indices[cls].append(i) 
 
     # Find the best pred and confidence by iterating over each sample per class, storing the last "best" in its index in an array of zeros
-    best_predictions = np.empty(inference_df.shape[0], dtype=object) # Each has the class label and not the class index
+    best_predictions = np.full(inference_df.shape[0], "<No proposed class was within the top k of the weak proba: Unlabeled>", dtype=object) # Each has the class label and not the class index
     best_confidences = np.zeros(inference_df.shape[0])
 
     what_is_happening = {} # TODO REMOVE
+    class_labels = [label_mapping[str(_)] for _ in list(ext_clf.classes_)]
 
     print(f"\n- Iterating over the classes...")
     # cls is the class being tested as extension, idxs are the global indexes of the samples that have been candidated to class "cls" by the weak classifier
@@ -162,10 +163,6 @@ def run_topk_predict_on_inference_input_df(
                                                              class_label_int=cls,
                                                              class_to_clusters=class_to_clusters,
                                                              cluster_centroids=cluster_centroids)
-
-        # Populate global stats ---------------------
-        class_labels = [label_mapping[str(_)] for _ in list(ext_clf.classes_)] 
-        # -------------------------------------------
 
         cluster_class_to_indices = defaultdict(list) # dict that maps, for each cluster class (numeric class, not label), the index of the samples that, for the class cls, are candidate for that cluster class (subclass)
         for i in range(X_of_class.shape[0]):
@@ -346,7 +343,7 @@ def print_diagnostics(inference_df_full, confidences, predictions, labels):
     pred_counts = Counter(predictions)
 
     print("\nTop predicted classes:")
-    for cls, count in pred_counts.most_common(10):
+    for cls, count in pred_counts.most_common():
         pct = 100 * count / n_samples
         print(f"\tClass {cls}: {count} samples ({pct:5.2f}%)")
 
@@ -440,9 +437,9 @@ def main():
     # GLOBAL_STATS['config']['classes_infos']['cluster_centroids'] = cluster_centroids
 
     # Filter out Benign for more precise understanding on how the samples failed
-    # mask = labels != str(cfg.data.benign_tag)
-    # labels = labels[mask]
-    # inference_df = inference_df[mask]
+    mask = labels != str(cfg.data.benign_tag)
+    labels = labels[mask]
+    inference_df = inference_df[mask]
 
     # Find predictions and confidences, and append to df as columns
     predictions, confidences = run_topk_predict_on_inference_input_df(
