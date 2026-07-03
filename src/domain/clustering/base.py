@@ -9,9 +9,9 @@ from tqdm import tqdm
 
 from src.core.utils import timed
 from src.domain.analysis.complexity.shared import (
-    _hybrid_row_batch,
-    _hybrid_row_batch_euclidean,
-    _l2_normalize,
+    hybrid_row_batch,
+    hybrid_row_batch_euclidean,
+    l2_normalize,
 )
 
 FitFn = Callable[..., np.ndarray]  # (X_num, X_cat=None, **params) -> labels
@@ -101,10 +101,10 @@ def pairwise_hybrid_distance(
     d_num = X_num.shape[1]
     d_cat = X_cat.shape[1] if X_cat is not None else 0
     if metric == "cosine":
-        X_norm = _l2_normalize(X_num)
-        return _hybrid_row_batch(X_norm, X_cat, X_norm, X_cat, d_num, d_cat)
+        X_norm = l2_normalize(X_num)
+        return hybrid_row_batch(X_norm, X_cat, X_norm, X_cat, d_num, d_cat)
     feat_ranges = X_num.max(axis=0) - X_num.min(axis=0)
-    return _hybrid_row_batch_euclidean(
+    return hybrid_row_batch_euclidean(
         X_num, X_cat, X_num, X_cat, d_num, d_cat, feat_ranges
     )
 
@@ -297,13 +297,16 @@ def grid_search(
         tilt = resolution_weight * (e["n_clusters"] / max_k) if max_k > 0 else 0.0
         e["resolution_tilt"] = tilt
         e["score"] = e["silhouette"] - noise_penalty * e["noise_ratio"] + tilt
+        current_entry_model = e.pop("model") # Must pop anyway, or the metadata in json will save the entire model and break as it's not JSON serializable
         if e["score"] > best_score:
             best_score = e["score"]
-            best_model = e.pop("model")
+            best_model = current_entry_model
             best_entry = e
             
     first_entry_model = sweep[0].pop("model", "Already popped") # Remove only first in case it is the one with errors
-    if best_entry is None: # All of the entries were invalid, must use the first, which has errors
+    if best_entry is None:
+        # All of the entries were invalid. Must use the first, which has errors. 
+        # If it has errors, the model key had not been popped yet, so first_entry_model will be the actual model
         best_model = first_entry_model
         best_entry = sweep[0] if sweep else None
 
